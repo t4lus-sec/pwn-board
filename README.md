@@ -172,7 +172,10 @@ The markers mean:
 **The Desktop pane** ("search boards") shows the same tree live, with folding, color-coded by
 kind (blue intents, green and red findings, yellow notes) and a stepper across the top:
 Search → Write-up → Review → Verify → Complete. Its four tabs, Board, Review, Verification and
-Complete, are there from the start; a tab that waits on you gets a dot.
+Complete, are there from the start; a tab that waits on you gets a dot. Write-ups, both checks, the
+reconciled report, review notes and answers, and finding and note text render as Markdown, with
+the chat's own renderer, in preview mode, so nothing in them loads an image or runs anything. A
+delivered `.md` file renders too, with a "Show source" switch.
 
 ![The pane: Board, Review and Verification tabs](docs/pane-dark.png)
  The workflow tabs show the write-up, the files as delivered, your notes with the agent's answers,

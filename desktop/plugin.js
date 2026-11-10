@@ -19,14 +19,19 @@
  * uncompiled, so no utility class it uses can be counted on to exist. It reskins with
  * every theme, light or dark.
  *
+ * Write-ups, reports, notes and answers render as Markdown with the chat's own renderer
+ * (the SDK's MessageTextContent, preview-only: no images, no live directives). On a shell
+ * without it, Streamdown with images and links shown as text; with neither, plain text.
+ *
  * Data comes from this package's own backend (dashboard/plugin_api.py) through ctx.rest.
  * It refreshes on the plugin's `board.changed` event and polls every 5 s as a fallback.
  */
 
-import { PANES_AREA } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import * as sdk from '@hermes/plugin-sdk'
+import { Component, useCallback, useEffect, useMemo, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
+const { PANES_AREA } = sdk
 const EVENT = 'plugin.search-board.board.changed'
 
 // ------------------------------------------------------------------ look
@@ -74,6 +79,54 @@ const S = {
   prose: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, color: C.text },
   input: { flex: 1, minWidth: 0, background: 'transparent', color: C.text, border: `1px solid ${C.line}`, borderRadius: 7, padding: '5px 9px', fontSize: 12.5, outline: 'none' },
   row: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }
+}
+
+// ------------------------------------------------------------------ markdown
+
+// What the agent writes is untrusted: never fetch an image or follow a link from it on
+// the older-shell path. The alt text and the link text (with its target) are shown instead.
+const SAFE_MD = {
+  img: ({ alt, src }) => jsx('span', { style: { color: C.text3 }, children: `[image: ${alt || src || ''}]` }),
+  a: ({ children, href }) => jsxs('span', { style: { color: C.accent }, title: href, children: [children, href ? ` (${href})` : null] })
+}
+
+class MdBoundary extends Component {
+  constructor(props) { super(props); this.state = { failed: false } }
+  static getDerivedStateFromError() { return { failed: true } }
+  componentDidUpdate(prev) { if (prev.text !== this.props.text && this.state.failed) this.setState({ failed: false }) }
+  render() { return this.state.failed ? jsx('div', { style: S.prose, children: this.props.text }) : this.props.children }
+}
+
+/** Markdown as the chat renders it, sized for the pane. */
+export function Md({ text, muted = false, size = 13 }) {
+  const body = String(text ?? '')
+  if (!body.trim()) return null
+  const Rich = sdk.MessageTextContent
+  const Stream = sdk.Streamdown
+  let inner
+  if (Rich) inner = jsx(Rich, { text: body, media: false, previewOnly: true })
+  else if (Stream) inner = jsx(Stream, { components: SAFE_MD, children: body })
+  else return jsx('div', { 'data-md': 'plain', style: { ...S.prose, color: muted ? C.text2 : C.text }, children: body })
+  return jsx('div', {
+    'data-md': Rich ? 'chat' : 'streamdown',
+    style: { '--conversation-text-font-size': `${size}px`, fontSize: size, minWidth: 0, color: muted ? C.text2 : C.text, overflowWrap: 'anywhere' },
+    children: jsx(MdBoundary, { text: body, children: inner })
+  })
+}
+
+const MD_FILE = /\.(md|markdown|mdx)$/i
+
+/** One line of Markdown as plain text, for the tree's rows: no **, `, #, or link syntax. */
+export function plainText(text) {
+  return String(text ?? '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[^*\w])[*_]([^*_\s][^*_]*?)[*_](?![*\w])/g, '$1$2')
+    .replace(/`+([^`]+)`+/g, '$1')
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+)/gm, '')
+    .replace(/\s*\n\s*/g, ' ')
+    .trim()
 }
 
 function pill(text, color, { strong = false, key } = {}) {
@@ -238,7 +291,7 @@ function Row({ tree, row, folded, selected, onSelect, onToggle }) {
           }),
           jsx('div', {
             style: { color: C.text, lineHeight: 1.45, textDecoration: l.dim ? 'line-through' : 'none' },
-            children: l.text + (also ? ` (also from ${labels(also)})` : '')
+            children: plainText(l.text) + (also ? ` (also from ${labels(also)})` : '')
           })
         ]
       })
@@ -263,27 +316,27 @@ function Detail({ ctx, snap, tree, id }) {
 
   const b = snap.board
   let title
-  let lines
+  let lines // [field name or null, text, markdown?]
   if (!id || id === 'board') {
     title = 'The board'
-    lines = [`origin: ${b.origin}`, `goal: ${b.goal}`, `test (${b.goal_test_kind}): ${b.goal_test}`]
-    if (b.outcome) lines.push(`outcome: ${b.outcome}`)
+    lines = [['origin', b.origin, true], ['goal', b.goal, true], [`test (${b.goal_test_kind})`, b.goal_test, false]]
+    if (b.outcome) lines.push(['outcome', b.outcome, true])
   } else if (tree.leads[id]) {
     const l = tree.leads[id]
     title = `${label(l.id)} — ${l.state.replace('_', ' ')}, priority ${l.priority}`
-    lines = [`direction: ${l.direction}`, `rationale: ${l.rationale}`]
-    if (l.from_findings.length) lines.push(`came from: ${labels(l.from_findings)}`)
-    if (l.state === 'claimed') lines.push(`claimed by ${l.claimed_by ?? 'someone'}, ${ago(l.claimed_at)}`)
-    if (l.closed_by) lines.push(`${l.state === 'explored' ? 'explored in' : 'ruled out by'} ${label(l.closed_by)}`)
+    lines = [['direction', l.direction, true], ['rationale', l.rationale, true]]
+    if (l.from_findings.length) lines.push(['came from', labels(l.from_findings), false])
+    if (l.state === 'claimed') lines.push([null, `claimed by ${l.claimed_by ?? 'someone'}, ${ago(l.claimed_at)}`, false])
+    if (l.closed_by) lines.push([l.state === 'explored' ? 'explored in' : 'ruled out by', label(l.closed_by), false])
   } else if (finding) {
     title = `${label(finding.id)} — ${finding.polarity.replace('_', ' ')}, ${finding.basis}, by ${finding.author === 'plugin' ? 'the goal test' : finding.author}, ${ago(finding.created_at)}`
-    lines = [finding.statement]
-    if (finding.from_lead) lines.push(`explored: ${label(finding.from_lead)}`)
-    if (finding.from_findings.length) lines.push(`inferred from: ${labels(finding.from_findings)}`)
+    lines = [[null, finding.statement, true]]
+    if (finding.from_lead) lines.push(['explored', label(finding.from_lead), false])
+    if (finding.from_findings.length) lines.push(['inferred from', labels(finding.from_findings), false])
   } else if (tree.notes[id]) {
     const n = tree.notes[id]
     title = `${label(n.id)} — your note, ${ago(n.created_at)}${n.about ? `, about ${label(n.about)}` : ''}`
-    lines = [n.text, n.read ? 'read by the agent' : 'not read yet']
+    lines = [[null, n.text, true], [null, n.read ? 'read by the agent' : 'not read yet', false]]
   } else {
     title = ''
     lines = []
@@ -293,7 +346,15 @@ function Detail({ ctx, snap, tree, id }) {
     style: { ...S.card, maxHeight: '38%', overflow: 'auto', flexShrink: 0 },
     children: [
       jsx('div', { style: { fontWeight: 600, marginBottom: 4 }, children: title }),
-      ...lines.map((line, i) => jsx('div', { style: { color: C.text2, lineHeight: 1.5 }, children: line }, `l${i}`)),
+      ...lines.map(([field, value, md], i) => jsxs('div', {
+        style: { color: C.text2, lineHeight: 1.5, marginTop: i ? 4 : 0 },
+        children: md || field?.startsWith('test (')
+          ? [
+              field && jsx('div', { style: { ...S.muted, fontSize: 11 }, children: field }, 'f'),
+              md ? jsx(Md, { text: value, muted: !!field }, 'v') : jsx('div', { style: { ...S.pre, fontSize: 12 }, children: value }, 'v')
+            ]
+          : [field && jsx('span', { style: S.muted, children: `${field}: ` }, 'f'), value]
+      }, `l${i}`)),
       ...evidence.map(ev => jsxs('div', {
         style: { marginTop: 8, borderTop: `1px solid ${C.line2}`, paddingTop: 6 },
         children: [
@@ -376,6 +437,7 @@ function BoardActions({ ctx, snap, wf, selected, tree, onDone }) {
 function Files({ ctx, name, files }) {
   const [open, setOpen] = useState(null)
   const [content, setContent] = useState('')
+  const [source, setSource] = useState(false)
   useEffect(() => {
     let live = true
     if (open) {
@@ -390,7 +452,7 @@ function Files({ ctx, name, files }) {
     children: [
       ...files.map(f => jsxs('div', {
         role: 'button',
-        onClick: () => setOpen(open === f.path ? null : f.path),
+        onClick: () => { setSource(false); setOpen(open === f.path ? null : f.path) },
         style: {
           display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', margin: '3px 0', borderRadius: 7, cursor: 'pointer',
           background: open === f.path ? tint(C.accent, 14) : tint(C.text3, 6), fontFamily: MONO, fontSize: 12
@@ -401,7 +463,14 @@ function Files({ ctx, name, files }) {
           f.error && pill('not kept', C.rulesOut)
         ]
       }, f.path)),
-      open && jsx('pre', { style: { ...S.pre, maxHeight: 260, overflow: 'auto', marginTop: 6, padding: 8, borderRadius: 7, background: tint(C.text3, 6) }, children: content })
+      open && MD_FILE.test(open) && jsx('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 }, children: jsx('button', {
+        type: 'button', onClick: () => setSource(!source),
+        style: { fontSize: 11, color: C.accent, background: 'none', border: 'none', padding: 0, cursor: 'pointer' },
+        children: source ? 'Show rendered' : 'Show source'
+      }) }),
+      open && (MD_FILE.test(open) && !source
+        ? jsx('div', { style: { maxHeight: 320, overflow: 'auto', marginTop: 4, padding: '6px 10px', borderRadius: 7, background: tint(C.text3, 6) }, children: jsx(Md, { text: content }) })
+        : jsx('pre', { style: { ...S.pre, maxHeight: 260, overflow: 'auto', marginTop: 6, padding: 8, borderRadius: 7, background: tint(C.text3, 6) }, children: content }))
     ]
   })
 }
@@ -419,7 +488,7 @@ function Notes({ notes, canTakeBack, onTakeBack }) {
               jsx('span', { style: { fontWeight: 700, color: C.review, fontSize: 12 }, children: `${label(n.id)} · you · round ${n.round}` }),
               !n.answer && pill('awaiting answer', C.review)
             ] }),
-            jsx('div', { style: S.prose, children: n.text }),
+            jsx(Md, { text: n.text }),
             !n.answer && canTakeBack && jsx('button', { type: 'button', onClick: () => onTakeBack(n.id), style: { marginTop: 4, fontSize: 11, color: C.text3, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }, children: 'take back' })
           ]
         }),
@@ -427,7 +496,7 @@ function Notes({ notes, canTakeBack, onTakeBack }) {
           style: { marginRight: 28, marginTop: 4, padding: '7px 10px', borderRadius: '10px 10px 10px 2px', background: tint(C.intent, 10), border: `1px solid ${tint(C.intent, 30)}` },
           children: [
             jsx('div', { style: { fontWeight: 700, color: C.intent, fontSize: 12, marginBottom: 2 }, children: 'agent' }),
-            jsx('div', { style: S.prose, children: n.answer })
+            jsx(Md, { text: n.answer })
           ]
         })
       ]
@@ -486,7 +555,7 @@ function ReviewTab({ ctx, board, wf, onDone }) {
           jsx(Card, {
             title: `Write-up · round ${latest.round}`, color: C.accent,
             right: jsx('span', { style: { ...S.muted, fontSize: 11 }, children: `${ago(latest.at)}${wf.reports.length > 1 ? ` · ${wf.reports.length - 1} earlier round(s)` : ''}` }),
-            children: jsx('div', { style: S.prose, children: latest.text })
+            children: jsx(Md, { text: latest.text })
           }),
           jsx(Card, { title: 'Files as delivered', children: jsx(Files, { ctx, name: board.name, files: wf.files }) }),
           jsx(Card, { title: 'Review notes', color: C.review, children: jsx(Notes, { notes: wf.notes, canTakeBack: stage === 'review', onTakeBack: id => run(`/boards/${name}/uncomment`, { id }) }) })
@@ -539,17 +608,20 @@ function VerificationTab({ ctx, board, wf, onDone }) {
           jsx(Card, {
             title: 'Independent verifier (subagent)', color: C.test,
             right: jsxs('span', { style: S.row, children: [pill(verifierState, C.test), verdictPill(f.verifier_verdict, '—')] }),
-            children: jsx('pre', { style: S.pre, children: f.verifier_report || f.verifier_note || 'No report yet.' })
+            children: [
+              f.verifier_note && jsx('div', { style: { ...S.muted, marginBottom: f.verifier_report ? 6 : 0 }, children: f.verifier_note }, 'n'),
+              f.verifier_report ? jsx(Md, { text: f.verifier_report }, 'r') : !f.verifier_note && jsx('div', { style: S.muted, children: 'No report yet.' }, 'e')
+            ]
           }),
           jsx(Card, {
             title: "The agent's own check", color: C.intent,
             right: verdictPill(f.own_verdict, 'not filed yet'),
-            children: jsx('div', { style: S.prose, children: f.own_report || '—' })
+            children: f.own_report ? jsx(Md, { text: f.own_report }) : jsx('div', { style: S.muted, children: '—' })
           }),
           jsx(Card, {
             title: 'Reconciled', color: C.accent,
             right: verdictPill(f.verdict, 'not yet'),
-            children: jsx('div', { style: S.prose, children: f.verification || 'The agent reconciles the two checks once both are in.' })
+            children: f.verification ? jsx(Md, { text: f.verification }) : jsx('div', { style: S.muted, children: 'The agent reconciles the two checks once both are in.' })
           })
         ]
       }),
@@ -591,8 +663,8 @@ function CompleteTab({ ctx, board, wf, onDone }) {
               jsx('div', { style: { ...S.muted, marginTop: 2 }, children: `${f.verdict ? `verified (${f.verdict}) · ` : ''}accepted ${ago(f.accepted_at)}` })
             ]
           }),
-          latest && jsx(Card, { title: `Final write-up · round ${latest.round}`, color: C.accent, children: jsx('div', { style: S.prose, children: latest.text }) }),
-          f.verification && jsx(Card, { title: 'Verification', color: C.test, right: verdictPill(f.verdict), children: jsx('div', { style: S.prose, children: f.verification }) }),
+          latest && jsx(Card, { title: `Final write-up · round ${latest.round}`, color: C.accent, children: jsx(Md, { text: latest.text }) }),
+          f.verification && jsx(Card, { title: 'Verification', color: C.test, right: verdictPill(f.verdict), children: jsx(Md, { text: f.verification }) }),
           jsx(Card, { title: 'Files as delivered', children: jsx(Files, { ctx, name: board.name, files: wf.files }) }),
           wf.notes.length > 0 && jsx(Card, { title: 'Review', color: C.review, children: jsx(Notes, { notes: wf.notes, canTakeBack: false }) })
         ]

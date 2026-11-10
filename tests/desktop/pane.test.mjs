@@ -15,7 +15,8 @@ const React = await import('react')
 const { act } = React
 const { createRoot } = await import('react-dom/client')
 const plugin = (await import('./.plugin.under-test.js')).default
-const { buildTree, visibleRows } = await import('./.plugin.under-test.js')
+const { buildTree, visibleRows, plainText } = await import('./.plugin.under-test.js')
+const sdk = await import('@hermes/plugin-sdk')
 // Written by the real backend routes: SEARCH_BOARD_PANE_FIXTURE=tests/desktop/fixture.json pytest -k fixture
 const fixture = JSON.parse(readFileSync(new URL('./fixture.json', import.meta.url), 'utf8'))
 
@@ -27,6 +28,16 @@ assert.deepEqual(tree.children.F1, ['L2'])
 assert.deepEqual(tree.children.L2, ['N1'])
 assert.deepEqual(visibleRows(tree, {}).map(r => [r.id, r.depth]), [['L1', 0], ['F1', 1], ['L2', 2], ['N1', 3]])
 assert.deepEqual(visibleRows(tree, { F1: true }).map(r => r.id), ['L1', 'F1'])
+
+// --- one-line Markdown for tree rows
+assert.equal(plainText('Goal test passed: `pytest --count 50` exited 0.'), 'Goal test passed: pytest --count 50 exited 0.')
+assert.equal(plainText('**Bold**, _it_, [a link](http://x) and snake_case_name'), 'Bold, it, a link and snake_case_name')
+assert.equal(plainText('## Heading\n- one\n- two'), 'Heading one two')
+assert.equal(plainText('a * b * c'), 'a * b * c')
+
+// The workflow carries Markdown, as agents write it; and a delivered Markdown file.
+fixture.workflow.reports[0].text = "**Raised** the container's tmpfs to 1 GB; fifty runs pass on the goal test.\n\n- `docker-compose.yml`: `size=1g`"
+fixture.workflow.files.push({ path: '/w/NOTES.md', chars: 24, truncated: false, error: null })
 
 // --- registration
 const contributions = []
@@ -42,6 +53,7 @@ const ctx = {
     calls.push([path, opts])
     if (path.startsWith('/boards?')) return fixture.boards
     if (path === '/boards/flaky-flush/workflow') return fixture.workflow
+    if (path.startsWith('/boards/flaky-flush/file?') && path.includes('NOTES.md')) return { path: '/w/NOTES.md', content: '# Notes\n\n**1 GB** is enough.' }
     if (path.startsWith('/boards/flaky-flush/file?')) return fixture.file
     if (path.startsWith('/boards/flaky-flush') && !opts) return fixture.board
     if (path.startsWith('/evidence')) return fixture.evidence
@@ -84,6 +96,7 @@ await act(async () => rows[1].dispatchEvent(new window.MouseEvent('click', { bub
 await settle()
 assert.match(text(), /Finding 1 — supports, observed, by model/)
 assert.match(text(), /e1 · terminal/)
+assert.ok(sdk.rendered.some(([how, p]) => how === 'chat' && p.text === 'Fails 3 of 50 with ENOSPC'), 'a finding renders as Markdown')
 assert.ok(calls.some(([p]) => p === '/evidence?ids=1'))
 
 // --- leave a note about Finding 1
@@ -114,12 +127,25 @@ await act(async () => tabs()[1].click())
 await settle()
 assert.match(text(), /Reviewed: the board is in verification\./)
 assert.match(text(), /Write-up · round 1/)
-assert.match(text(), /Raised the container's tmpfs to 1 GB/)
+assert.match(text(), /\*\*Raised\*\* the container's tmpfs to 1 GB/)  // the stub echoes the source it was handed
+const writeUp = sdk.rendered.find(([how, p]) => how === 'chat' && p.text.startsWith('**Raised**'))
+assert.ok(writeUp, 'the write-up goes through the chat renderer')
+assert.equal(writeUp[1].previewOnly, true, 'preview-only: no images, no live directives')
+assert.equal(writeUp[1].media, false)
+assert.ok(sdk.rendered.some(([how, p]) => how === 'chat' && p.text === 'Did you try arm64?'), 'review notes render as Markdown')
 assert.match(text(), /Review note 1 · you · round 1.*awaiting answer.*Did you try arm64\?/)
 const fileRow = [...document.querySelectorAll('[role=button]')].find(e => e.textContent.startsWith('/w/docker-compose.yml'))
 await act(async () => fileRow.click())
 await settle()
 assert.match(text(), /tmpfs: \/tmp:size=1g/)
+assert.ok(!button(/^Show source/), 'no Markdown toggle for a yml file')
+const mdRow = [...document.querySelectorAll('[role=button]')].find(e => e.textContent.startsWith('/w/NOTES.md'))
+await act(async () => mdRow.click())
+await settle()
+assert.ok(sdk.rendered.some(([how, p]) => how === 'chat' && p.text.startsWith('# Notes')), 'a .md file renders')
+assert.equal(document.querySelector('pre')?.textContent?.startsWith('# Notes') ?? false, false)
+await act(async () => button(/^Show source/).click())
+assert.ok([...document.querySelectorAll('pre')].some(e => e.textContent.startsWith('# Notes')), 'and shows its source on request')
 
 // --- Verification tab: accept wants two clicks
 await act(async () => tabs()[2].click())
@@ -127,6 +153,9 @@ await settle()
 assert.match(text(), /Independent verifier \(subagent\)done✓ PASSED/)
 assert.match(text(), /The agent's own check✓ PASSED/)
 assert.match(text(), /Reconciled✓ PASSED.*Both checks agree/)
+for (const t of ['VERDICT: passed\n\nThe compose file shows 1 GB.', 'Both checks agree: the fix is the tmpfs size, and the test passes.']) {
+  assert.ok(sdk.rendered.some(([how, p]) => how === 'chat' && p.text === t), `rendered as Markdown: ${t.slice(0, 20)}`)
+}
 const before = calls.length
 await act(async () => button(/^Accept as complete/).click())
 assert.equal(button(/^Accept as complete/).textContent, 'Accept as complete?')
@@ -152,4 +181,47 @@ await act(async () => button(/^Send back$/).click())
 await settle()
 assert.ok(calls.some(([p, o]) => p === '/boards/flaky-flush/decide' && o?.body?.decision === 'reject'))
 await act(async () => root2.unmount())
+// --- an older shell: Streamdown, with images and links shown as text, never fetched or followed
+sdk.__setRenderers({ chat: null })
+sdk.rendered.length = 0
+const root3 = createRoot(document.getElementById('root'))
+await act(async () => root3.render(contributions[0].render()))
+await settle()
+await act(async () => tabs()[1].click())
+await settle()
+const streamed = sdk.rendered.find(([how]) => how === 'streamdown')
+assert.ok(streamed, 'falls back to Streamdown')
+const { img, a } = streamed[1].components
+const shownImg = img({ alt: 'key', src: '/home/user/.ssh/id_rsa' })
+assert.notEqual(shownImg.type, 'img')
+assert.equal(shownImg.props.children, '[image: key]')
+const shownLink = a({ href: 'http://x.test/', children: 'site' })
+assert.notEqual(shownLink.type, 'a')
+await act(async () => root3.unmount())
+
+// --- neither renderer: plain text, still readable
+sdk.__setRenderers({ chat: null, streamdown: null })
+const root4 = createRoot(document.getElementById('root'))
+await act(async () => root4.render(contributions[0].render()))
+await settle()
+await act(async () => tabs()[1].click())
+await settle()
+assert.ok(document.querySelector('[data-md=plain]'))
+assert.match(text(), /\*\*Raised\*\* the container's tmpfs/)
+await act(async () => root4.unmount())
+
+// --- a renderer that throws doesn't take the pane down
+sdk.__setRenderers({ chat: () => { throw new Error('boom') } })
+const origError = console.error
+console.error = () => {}
+const root5 = createRoot(document.getElementById('root'))
+await act(async () => root5.render(contributions[0].render()))
+await settle()
+await act(async () => tabs()[1].click())
+await settle()
+console.error = origError
+assert.match(text(), /Write-up · round 1/)
+assert.match(text(), /\*\*Raised\*\* the container's tmpfs/)
+await act(async () => root5.unmount())
+sdk.__setRenderers()
 console.log('pane: all checks passed')
