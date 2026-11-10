@@ -18,13 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def api(tmp_path):
-    spec = importlib.util.spec_from_file_location("search_board_api_under_test", ROOT / "dashboard" / "plugin_api.py")
+    spec = importlib.util.spec_from_file_location("pwn_board_api_under_test", ROOT / "dashboard" / "plugin_api.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     store = module._m.Store.at(tmp_path / "boards.db")
     module._store = store
     app = FastAPI()
-    app.include_router(module.router, prefix="/api/plugins/search-board")
+    app.include_router(module.router, prefix="/api/plugins/pwn-board")
     return TestClient(app), store, module
 
 
@@ -42,19 +42,19 @@ def seed(store, m):
 def test_list_and_read(api):
     client, store, m = api
     seed(store, m)
-    boards = client.get("/api/plugins/search-board/boards").json()["boards"]
+    boards = client.get("/api/plugins/pwn-board/boards").json()["boards"]
     assert boards[0]["name"] == "flaky-flush" and boards[0]["findings"] == 1
-    snap = client.get("/api/plugins/search-board/boards/flaky-flush").json()
+    snap = client.get("/api/plugins/pwn-board/boards/flaky-flush").json()
     assert snap["leads"][0]["state"] == "explored" and snap["findings"][0]["evidence"] == [1]
-    ev = client.get("/api/plugins/search-board/evidence?ids=1").json()["evidence"][0]
+    ev = client.get("/api/plugins/pwn-board/evidence?ids=1").json()["evidence"][0]
     assert ev["tool_name"] == "terminal" and "ENOSPC" in ev["excerpt"]
-    assert client.get("/api/plugins/search-board/boards/nope").status_code == 404
+    assert client.get("/api/plugins/pwn-board/boards/nope").status_code == 404
 
 
 def test_operator_actions(api):
     client, store, m = api
     seed(store, m)
-    base = "/api/plugins/search-board/boards/flaky-flush"
+    base = "/api/plugins/pwn-board/boards/flaky-flush"
     note = client.post(f"{base}/note", json={"text": "F1: the container has a 64 MB /tmp"}).json()
     assert note["note"] == {"id": "N1", "about": "F1"}
     assert client.post(f"{base}/unnote", json={"id": "N1"}).json()["ok"]
@@ -92,22 +92,22 @@ def test_pane_fixture(api, tmp_path):
     store.verifier_finish(board_id, token, ok=True, verdict="passed", report="VERDICT: passed\n\nThe compose file shows 1 GB.")
     store.own_check("flaky-flush", "passed", "Re-ran the goal test: fifty runs pass. The compose file is right.")
     store.reconcile("flaky-flush", "passed", "Both checks agree: the fix is the tmpfs size, and the test passes.")
-    target = os.environ.get("SEARCH_BOARD_PANE_FIXTURE")
+    target = os.environ.get("PWN_BOARD_PANE_FIXTURE")
     if not target:
-        pytest.skip("set SEARCH_BOARD_PANE_FIXTURE to write the pane fixture")
+        pytest.skip("set PWN_BOARD_PANE_FIXTURE to write the pane fixture")
     Path(target).write_text(json.dumps({
-        "boards": client.get("/api/plugins/search-board/boards?all=true").json(),
-        "board": client.get("/api/plugins/search-board/boards/flaky-flush").json(),
-        "evidence": client.get("/api/plugins/search-board/evidence?ids=1").json(),
-        "workflow": client.get("/api/plugins/search-board/boards/flaky-flush/workflow").json(),
-        "file": client.get("/api/plugins/search-board/boards/flaky-flush/file", params={"path": "/w/docker-compose.yml"}).json(),
+        "boards": client.get("/api/plugins/pwn-board/boards?all=true").json(),
+        "board": client.get("/api/plugins/pwn-board/boards/flaky-flush").json(),
+        "evidence": client.get("/api/plugins/pwn-board/evidence?ids=1").json(),
+        "workflow": client.get("/api/plugins/pwn-board/boards/flaky-flush/workflow").json(),
+        "file": client.get("/api/plugins/pwn-board/boards/flaky-flush/file", params={"path": "/w/docker-compose.yml"}).json(),
     }, indent=1))
 
 
 def test_workflow_routes(api):
     client, store, m = api
     seed(store, m)
-    base = "/api/plugins/search-board/boards/flaky-flush"
+    base = "/api/plugins/pwn-board/boards/flaky-flush"
     store.close("flaky-flush", "proposed_solved", "the fix makes fifty runs pass")
     store.submit_report("flaky-flush", "A write-up long enough to be accepted by the store, about the fix.",
                         [{"path": "/w/a.py", "content": "print(1)", "chars": 8}])
@@ -130,9 +130,9 @@ def test_build_says_what_each_side_runs(api):
 
     client, store, m = api
     version = re.search(r"^version:\s*(\S+)", (ROOT / "plugin.yaml").read_text(), re.M).group(1)
-    assert client.get("/api/plugins/search-board/build").json() == {"api": version, "agent": None}
+    assert client.get("/api/plugins/pwn-board/build").json() == {"api": version, "agent": None}
     store.record_build("agent", "0.1.0")
-    assert client.get("/api/plugins/search-board/build").json() == {"api": version, "agent": "0.1.0"}
+    assert client.get("/api/plugins/pwn-board/build").json() == {"api": version, "agent": "0.1.0"}
 
 
 def test_the_pane_and_the_manifest_are_the_same_build():

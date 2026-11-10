@@ -11,14 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-if "search_board" not in sys.modules:
-    spec = importlib.util.spec_from_file_location("search_board", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
+if "pwn_board" not in sys.modules:
+    spec = importlib.util.spec_from_file_location("pwn_board", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
     module = importlib.util.module_from_spec(spec)
-    sys.modules["search_board"] = module
+    sys.modules["pwn_board"] = module
     spec.loader.exec_module(module)
 
-from search_board import board_commands as cmd, board_flow as flowrt, board_hooks as hooks, board_tools as tools  # noqa: E402
-from search_board.board_store import Store  # noqa: E402
+from pwn_board import board_commands as cmd, board_flow as flowrt, board_hooks as hooks, board_tools as tools  # noqa: E402
+from pwn_board.board_store import Store  # noqa: E402
 
 MAIN = {"session_id": "s-main", "conversation_id": "c-1", "task_id": "t-1"}
 REPORT = "Fixed the flush: the container's /tmp was a 64 MB tmpfs. Raised it to 1 GB in docker-compose.yml; fifty runs pass."
@@ -78,21 +78,21 @@ def call(env, name, args, **kwargs):
 
 
 def solved_board(env, name="flaky-flush"):
-    call(env, "search_board_open", {"name": name, "title": "Find why test_flush fails one run in fifty",
+    call(env, "pwn_board_open", {"name": name, "title": "Find why test_flush fails one run in fifty",
                                     "origin": "CI fails about 2%", "goal": "fifty green runs in a row",
                                     "goal_test": "pytest --count 50", "goal_test_kind": "command"})
     hook = hooks.make_tool_result_hook(lambda: env.store)
     tagged = json.loads(hook(tool_name="terminal", args={"command": "df /tmp"}, result=json.dumps({"output": "tmpfs 64M 64M 0 100% /tmp"})))
-    call(env, "search_board_finding", {"name": name, "statement": "The container's /tmp is a full 64 MB tmpfs",
+    call(env, "pwn_board_finding", {"name": name, "statement": "The container's /tmp is a full 64 MB tmpfs",
                                        "polarity": "supports", "basis": "observed", "evidence": [tagged["_evidence"]]})
     env.runs.append(("ran", 0, "50 passed", None))
-    result = call(env, "search_board_test", {"name": name})
-    assert result["board_status"] == "solved" and "search_board_report" in result["write_up"]
+    result = call(env, "pwn_board_test", {"name": name})
+    assert result["board_status"] == "solved" and "pwn_board_report" in result["write_up"]
     return result
 
 
 def report(env, name="flaky-flush", files=("/work/docker-compose.yml",)):
-    return call(env, "search_board_report", {"name": name, "report": REPORT, "files": list(files)})
+    return call(env, "pwn_board_report", {"name": name, "report": REPORT, "files": list(files)})
 
 
 def run_poller(env):
@@ -119,13 +119,13 @@ def run_verifier(env, report="VERDICT: passed\n\nRan the goal test: fifty runs p
 
 def test_a_finished_board_owes_a_write_up(env):
     solved_board(env)
-    read = call(env, "search_board_read", {"name": "flaky-flush"})
+    read = call(env, "pwn_board_read", {"name": "flaky-flush"})
     assert "write_up_due" in read["workflow"] and read["workflow"]["stage"] == "working"
     assert "write-up due" in hooks.make_context_hook(lambda: env.store)(session_id="s-main")["context"]
 
 
 def test_an_open_board_cannot_be_written_up(env):
-    call(env, "search_board_open", {"name": "open-one", "title": "Something still being searched",
+    call(env, "pwn_board_open", {"name": "open-one", "title": "Something still being searched",
                                     "origin": "an origin here", "goal": "a goal to reach",
                                     "goal_test": "true", "goal_test_kind": "command"})
     result = report(env, "open-one")
@@ -166,14 +166,14 @@ def test_sent_back_with_notes_every_note_needs_an_answer(env):
     key, text = env.injected[-1]
     assert key == "ses_main" and "R1: Did you check it on arm64?" in text and "R2" in text
 
-    read = call(env, "search_board_read", {"name": "flaky-flush"})
+    read = call(env, "pwn_board_read", {"name": "flaky-flush"})
     assert [n["id"] for n in read["workflow"]["review"]] == ["R1", "R2"] and "answer_first" in read["workflow"]
     env.runs.append(("ran", 0, "50 passed", None))
-    call(env, "search_board_test", {"name": "flaky-flush"})
+    call(env, "pwn_board_test", {"name": "flaky-flush"})
     refused = report(env)
     assert not refused["ok"] and "R1, R2" in refused["error"]
-    assert call(env, "search_board_answer", {"name": "flaky-flush", "note": "R1", "answer": "Yes, the arm64 runner passes too."})["unanswered"] == ["R2"]
-    call(env, "search_board_answer", {"name": "flaky-flush", "note": "r2", "answer": "256 MB fails at 40 runs."})
+    assert call(env, "pwn_board_answer", {"name": "flaky-flush", "note": "R1", "answer": "Yes, the arm64 runner passes too."})["unanswered"] == ["R2"]
+    call(env, "pwn_board_answer", {"name": "flaky-flush", "note": "r2", "answer": "256 MB fails at 40 runs."})
     result = report(env)
     assert result["ok"] and result["round"] == 2
     review = cmd.run(env.store, "review flaky-flush")
@@ -193,7 +193,7 @@ def test_answers_only_while_working(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "comment flaky-flush a question for you")
-    result = call(env, "search_board_answer", {"name": "flaky-flush", "note": "R1", "answer": "an answer"})
+    result = call(env, "pwn_board_answer", {"name": "flaky-flush", "note": "R1", "answer": "an answer"})
     assert not result["ok"] and "nothing to answer now" in result["error"]
 
 
@@ -209,18 +209,18 @@ def test_the_verifiers_report_is_held_until_the_agent_files_its_own(env):
     assert any("Check it yourself now" in text for _, text in env.injected)
     assert not any("verifier's report" in text for _, text in env.injected)
 
-    read = call(env, "search_board_read", {"name": "flaky-flush"})
+    read = call(env, "pwn_board_read", {"name": "flaky-flush"})
     assert read["workflow"]["verifier"] == "held until you file your own check"
-    early = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed", "report": "x" * 50})
+    early = call(env, "pwn_board_verification", {"name": "flaky-flush", "verdict": "passed", "report": "x" * 50})
     assert not early["ok"] and "own check first" in early["error"]
 
-    own = call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed",
+    own = call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed",
                                             "findings": "Re-ran the goal test: fifty runs pass. Read the compose file: tmpfs is 1 GB."})
     assert own["verifier"]["state"] == "done" and own["verifier"]["verdict"] == "passed"
     assert own["verifier"]["report"].startswith("VERDICT: passed") and "compose file sets 1 GB" in own["verifier"]["report"]
-    assert not call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "y" * 50})["ok"]
+    assert not call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "y" * 50})["ok"]
 
-    done = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
+    done = call(env, "pwn_board_verification", {"name": "flaky-flush", "verdict": "passed",
                                                    "report": "Both checks agree: the goal test passes and the fix is the tmpfs size."})
     assert done["ok"]
     assert "verified (passed): accept or send back" in cmd.run(env.store, "")
@@ -235,7 +235,7 @@ def test_the_verifier_is_a_subagent_that_sees_the_work_not_the_agents_word(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "MY SECRET OWN CHECK " * 5})
+    call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "MY SECRET OWN CHECK " * 5})
     request = run_verifier(env)
     assert request["role"] == "leaf" and request["allowed_toolsets"] == ("terminal", "file")
     assert "Run the goal test if it is a command" in request["goal"] and "pytest --count 50" in request["goal"]
@@ -254,8 +254,8 @@ def test_a_verifier_only_reads_the_board(env):
     env.verifiers.in_turn()
     env.verifiers.on_child_start(child_session_id="child-v", child_goal=env.service.requests[-1]["goal"])
     tools.note_subagent("child-v")
-    assert call(env, "search_board_review", {"name": "flaky-flush"}, session_id="child-v")["ok"]
-    refused = call(env, "search_board_leads", {"name": "flaky-flush", "leads": [{"direction": "something else to try", "rationale": "because of reasons"}]},
+    assert call(env, "pwn_board_review", {"name": "flaky-flush"}, session_id="child-v")["ok"]
+    refused = call(env, "pwn_board_leads", {"name": "flaky-flush", "leads": [{"direction": "something else to try", "rationale": "because of reasons"}]},
                    session_id="child-v")
     assert not refused["ok"] and "only reads the board" in refused["error"]
 
@@ -343,9 +343,9 @@ def test_back_to_review_and_verified_again_from_complete(env):
     assert env.store.workflow("flaky-flush").flow.verifier_state is None
     cmd.run(env.store, "verify flaky-flush")
     run_verifier(env)
-    assert call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed",
+    assert call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed",
                                              "findings": "Checked it all again: fifty runs pass, compose file is right."})["ok"]
-    assert call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
+    assert call(env, "pwn_board_verification", {"name": "flaky-flush", "verdict": "passed",
                                                    "report": "Both agree: the test passes and the fix is the tmpfs size."})["ok"]
     assert "complete" in cmd.run(env.store, "accept flaky-flush")
     assert "in verification" in cmd.run(env.store, "verify flaky-flush")  # verified again, from complete
@@ -365,10 +365,10 @@ def test_accept_needs_a_reconciled_report(env):
 
 
 def test_an_exhausted_proposal_is_reviewed_then_closed_by_the_operator(env):
-    call(env, "search_board_open", {"name": "ghost", "title": "Find the memory leak in the worker",
+    call(env, "pwn_board_open", {"name": "ghost", "title": "Find the memory leak in the worker",
                                     "origin": "RSS grows 10 MB an hour", "goal": "RSS flat for a day",
                                     "goal_test": "judge the graph", "goal_test_kind": "judgment"})
-    closed = call(env, "search_board_close", {"name": "ghost", "status": "proposed_exhausted",
+    closed = call(env, "pwn_board_close", {"name": "ghost", "status": "proposed_exhausted",
                                               "rationale": "Every allocation site was profiled and ruled out."})
     assert "what was tried" in closed["write_up"]
     assert report(env, "ghost", files=())["ok"]
@@ -379,10 +379,10 @@ def test_an_exhausted_proposal_is_reviewed_then_closed_by_the_operator(env):
 
 
 def test_an_exhausted_proposal_sent_back_is_open_again(env):
-    call(env, "search_board_open", {"name": "ghost", "title": "Find the memory leak in the worker",
+    call(env, "pwn_board_open", {"name": "ghost", "title": "Find the memory leak in the worker",
                                     "origin": "RSS grows 10 MB an hour", "goal": "RSS flat for a day",
                                     "goal_test": "judge the graph", "goal_test_kind": "judgment"})
-    call(env, "search_board_close", {"name": "ghost", "status": "proposed_exhausted", "rationale": "Every site was ruled out."})
+    call(env, "pwn_board_close", {"name": "ghost", "status": "proposed_exhausted", "rationale": "Every site was ruled out."})
     report(env, "ghost", files=())
     cmd.run(env.store, "comment ghost What about the thread-local caches?")
     cmd.run(env.store, "back ghost")
@@ -400,10 +400,10 @@ def test_discard_from_anywhere(env):
 
 
 def test_confirm_without_the_workflow_still_completes(env):
-    call(env, "search_board_open", {"name": "taste", "title": "Pick a better colour palette",
+    call(env, "pwn_board_open", {"name": "taste", "title": "Pick a better colour palette",
                                     "origin": "the old one is ugly", "goal": "the operator likes it",
                                     "goal_test": "the operator looks", "goal_test_kind": "judgment"})
-    call(env, "search_board_close", {"name": "taste", "status": "proposed_solved", "rationale": "Palette three reads well."})
+    call(env, "pwn_board_close", {"name": "taste", "status": "proposed_solved", "rationale": "Palette three reads well."})
     cmd.run(env.store, "confirm taste")
     assert env.store.workflow("taste").flow.stage == "deliverable"
     assert not report(env, "taste", files=())["ok"]
@@ -416,19 +416,19 @@ def test_subagents_have_no_part_in_the_workflow(env):
     solved_board(env)
     tools.note_subagent("s-sub")
     sub = {"session_id": "s-sub"}
-    assert "main agent's" in call(env, "search_board_report", {"name": "flaky-flush", "report": REPORT}, **sub)["error"]
-    assert "main agent's" in call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "x" * 50}, **sub)["error"]
+    assert "main agent's" in call(env, "pwn_board_report", {"name": "flaky-flush", "report": REPORT}, **sub)["error"]
+    assert "main agent's" in call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "x" * 50}, **sub)["error"]
     report(env)
-    assert call(env, "search_board_review", {"name": "flaky-flush"}, **sub)["ok"]  # reading what was delivered is fine
+    assert call(env, "pwn_board_review", {"name": "flaky-flush"}, **sub)["ok"]  # reading what was delivered is fine
 
 
 def test_a_subagents_passing_test_wakes_the_main_agent(env):
-    call(env, "search_board_open", {"name": "flaky-flush", "title": "Find why test_flush fails one run in fifty",
+    call(env, "pwn_board_open", {"name": "flaky-flush", "title": "Find why test_flush fails one run in fifty",
                                     "origin": "CI fails about 2%", "goal": "fifty green runs in a row",
                                     "goal_test": "pytest --count 50", "goal_test_kind": "command"})
     tools.note_subagent("s-sub")
     env.runs.append(("ran", 0, "50 passed", None))
-    result = call(env, "search_board_test", {"name": "flaky-flush"}, session_id="s-sub")
+    result = call(env, "pwn_board_test", {"name": "flaky-flush"}, session_id="s-sub")
     assert result["passed"] and "write_up" not in result
     run_poller(env)
     assert any("run by a subagent" in text for _, text in env.injected)
@@ -449,9 +449,9 @@ def test_a_wake_that_cannot_start_a_turn_goes_with_the_next_one(env):
 def test_review_tool_shows_what_was_delivered(env):
     solved_board(env)
     report(env)
-    shown = call(env, "search_board_review", {"name": "flaky-flush"})
+    shown = call(env, "pwn_board_review", {"name": "flaky-flush"})
     assert shown["report"] == REPORT and shown["files"][0]["path"] == "/work/docker-compose.yml"
-    one = call(env, "search_board_review", {"name": "flaky-flush", "file": "/work/docker-compose.yml"})
+    one = call(env, "pwn_board_review", {"name": "flaky-flush", "file": "/work/docker-compose.yml"})
     assert "size=1g" in one["content"]
 
 
@@ -480,9 +480,9 @@ def test_no_reconciling_before_the_verifier_is_done(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    assert call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed",
+    assert call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed",
                                              "findings": "Re-ran the goal test: fifty runs pass, compose file checked."})["ok"]
-    early = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed", "report": "z" * 60})
+    early = call(env, "pwn_board_verification", {"name": "flaky-flush", "verdict": "passed", "report": "z" * 60})
     assert not early["ok"] and "has not finished" in early["error"]
 
 
@@ -534,7 +534,7 @@ def test_a_verifier_left_by_an_older_build_can_be_run_again(env):
         db.execute("UPDATE flow SET verifier_state='stopped', verifier_report=?, verifier_note=NULL WHERE board_id=?",
                    (error, board_id))
     flow = env.store.workflow("flaky-flush").flow
-    assert flow.verifier_state == "failed" and "older search-board build" in flow.verifier_note
+    assert flow.verifier_state == "failed" and "older pwn-board build" in flow.verifier_note
     cmd.run(env.store, "reverify flaky-flush")
     assert env.store.workflow("flaky-flush").flow.verifier_state == "wanted"
     run_verifier(env)
@@ -547,7 +547,7 @@ def test_a_legacy_failed_verifier_does_not_block_reconciliation(env):
     cmd.run(env.store, "verify flaky-flush")
     with env.store._db(write=True) as db:
         db.execute("UPDATE flow SET verifier_state='error' WHERE board_id=?", (env.store.board("flaky-flush").id,))
-    assert call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "Re-ran the goal test: fifty pass. " * 2})["ok"]
-    done = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
+    assert call(env, "pwn_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "Re-ran the goal test: fifty pass. " * 2})["ok"]
+    done = call(env, "pwn_board_verification", {"name": "flaky-flush", "verdict": "passed",
                                                    "report": "The verifier did not finish; my own check passed. " * 2})
     assert done["ok"], done

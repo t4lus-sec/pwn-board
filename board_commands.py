@@ -1,4 +1,4 @@
-"""The operator's side of a board: the ``/sboard`` command and the actions behind it.
+"""The operator's side of a board: the ``/pwnboard`` command and the actions behind it.
 
 Notes land here and only here: nothing in the tool surface writes one, which is
 what makes the direction one-way by construction rather than by rule. The same
@@ -19,31 +19,31 @@ from typing import Optional
 from . import board_render as render
 from .board_store import Refused, Store, label, parse_ref
 
-HELP = """/sboard — search boards
-  /sboard                      boards that are live or waiting for you
-  /sboard all                  every board, closed ones too
-  /sboard show <name> [all]    the board as a tree (all: unfold ruled-out intents)
-  /sboard detail <name> <ref>  one intent, finding or note in full: "Finding 3", "Intent 2" or F3, I2
-  /sboard note <name> [Intent 3:] <text>   leave a note (about an intent or finding if you start with it)
-  /sboard unnote <name> <Note 2>     take a note off
-  /sboard extend <name> <steps>      give a suspended board more steps
-  /sboard confirm <name>       accept a proposed_solved board
-  /sboard exhaust <name>       accept a proposed_exhausted board
-  /sboard reject <name> [why]  send a proposal back; your reason becomes a note
-  /sboard abandon <name> [why] stop a search
+HELP = """/pwnboard — pwn boards
+  /pwnboard                      boards that are live or waiting for you
+  /pwnboard all                  every board, closed ones too
+  /pwnboard show <name> [all]    the board as a tree (all: unfold ruled-out intents)
+  /pwnboard detail <name> <ref>  one intent, finding or note in full: "Finding 3", "Intent 2" or F3, I2
+  /pwnboard note <name> [Intent 3:] <text>   leave a note (about an intent or finding if you start with it)
+  /pwnboard unnote <name> <Note 2>     take a note off
+  /pwnboard extend <name> <steps>      give a suspended board more steps
+  /pwnboard confirm <name>       accept a proposed_solved board
+  /pwnboard exhaust <name>       accept a proposed_exhausted board
+  /pwnboard reject <name> [why]  send a proposal back; your reason becomes a note
+  /pwnboard abandon <name> [why] stop a search
 
  the workflow (a finished board: write-up → your review → verification → complete)
-  /sboard review <name>        the write-up, the files as delivered, your review notes and the answers
-  /sboard file <name> <path>   one delivered file, as it was delivered
-  /sboard comment <name> <text>      leave a review note (the agent answers each before writing up again)
-  /sboard uncomment <name> <Review note 2>  take back a review note the agent hasn't answered
-  /sboard back <name> [why]    send it back to work: open again, a new round
-  /sboard verify <name>        send it to verification: an independent verifier and the agent check it
-  /sboard verification <name>  both checks and the reconciled report
-  /sboard reverify <name>      run a verifier that failed again
-  /sboard accept <name>        accept the verified board: complete
-  /sboard toreview <name> [why]      take it back to review, from verification or complete
-  /sboard discard <name> [why] throw it away, wherever it is"""
+  /pwnboard review <name>        the write-up, the files as delivered, your review notes and the answers
+  /pwnboard file <name> <path>   one delivered file, as it was delivered
+  /pwnboard comment <name> <text>      leave a review note (the agent answers each before writing up again)
+  /pwnboard uncomment <name> <Review note 2>  take back a review note the agent hasn't answered
+  /pwnboard back <name> [why]    send it back to work: open again, a new round
+  /pwnboard verify <name>        send it to verification: an independent verifier and the agent check it
+  /pwnboard verification <name>  both checks and the reconciled report
+  /pwnboard reverify <name>      run a verifier that failed again
+  /pwnboard accept <name>        accept the verified board: complete
+  /pwnboard toreview <name> [why]      take it back to review, from verification or complete
+  /pwnboard discard <name> [why] throw it away, wherever it is"""
 
 LOCAL_SURFACES = {"cli", "tui", "local", "desktop", ""}
 
@@ -57,7 +57,7 @@ WAKES = ("The agent is told now if this plugin may start a turn (allow_gateway_i
 def _list(store: Store, include_closed: bool) -> str:
     boards = store.boards(include_closed=include_closed)
     if not boards:
-        return "No boards" + ("" if include_closed else " live or waiting for you") + ". The agent opens one with search_board_open."
+        return "No boards" + ("" if include_closed else " live or waiting for you") + ". The agent opens one with pwn_board_open."
     lines = [f"{len(boards)} board(s):"]
     for board in boards:
         lines.append("  " + render.board_line(board, store.counts(board)))
@@ -67,7 +67,7 @@ def _list(store: Store, include_closed: bool) -> str:
         if state == "in review" or state.startswith("verified"):
             waiting.append(f"{board.name} ({state})")
     if waiting:
-        lines.append(f"[!] waiting for you: {', '.join(waiting)} (/sboard review <name>)")
+        lines.append(f"[!] waiting for you: {', '.join(waiting)} (/pwnboard review <name>)")
     return "\n".join(lines)
 
 
@@ -149,7 +149,7 @@ def run(store: Store, raw_args: str) -> str:
             board, _ = store.discard(rest[0], " ".join(rest[1:]))
             return f"'{board.name}' is discarded (abandoned). The agent hears with its next turn."
     except Refused as refused:
-        return f"search-board: {refused}"
+        return f"pwn-board: {refused}"
     return HELP
 
 

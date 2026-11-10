@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-SCHEMA = "search-board.v1"
+SCHEMA = "pwn-board.v1"
 
 CLAIM_TTL = timedelta(minutes=30)
 VERIFIER_STATES = (None, "wanted", "running", "done", "failed")
@@ -467,7 +467,7 @@ class Store:
     def _must_board(self, db: sqlite3.Connection, name: str) -> Board:
         board = self._get_board(db, str(name or "").strip())
         if board is None:
-            raise Refused(f"no board named '{name}' (see search_board_list)")
+            raise Refused(f"no board named '{name}' (see pwn_board_list)")
         return board
 
     @staticmethod
@@ -475,7 +475,7 @@ class Store:
         if board.status == "suspended":
             raise Refused(
                 f"'{board.name}' spent its {board.step_budget}-step budget and is suspended. "
-                f"The graph is intact; ask {who} to extend it (/sboard extend {board.name} <steps>)."
+                f"The graph is intact; ask {who} to extend it (/pwnboard extend {board.name} <steps>)."
             )
         if board.status != "open":
             raise Refused(f"'{board.name}' is closed ({board.status})")
@@ -754,7 +754,7 @@ class Store:
                 elif lead.state == "ruled_out":
                     raise Refused(f"{lead.id} was ruled out")
                 else:
-                    raise Refused(f"claim {lead.id} with search_board_claim before exploring it")
+                    raise Refused(f"claim {lead.id} with pwn_board_claim before exploring it")
                 attached = lead.id
 
             seq = self._next(db, "findings", board.id)
@@ -836,14 +836,14 @@ class Store:
     def record_test(self, name: str, *, passed: bool, verdict: str, command: str, output: str,
                     worker: str, conversation_id: str = "", session_id: str = "") -> tuple[Finding, Board]:
         """The plugin's own verdict on a goal test: evidence, finding, step and status in one write."""
-        body = f"[search-board goal test] board={name}\n$ {command}\nverdict: {verdict}\n{output}"
+        body = f"[pwn-board goal test] board={name}\n$ {command}\nverdict: {verdict}\n{output}"
         with self._db(write=True) as db:
             board = self._must_board(db, name)
             self._must_accept(board)
             cursor = db.execute(
                 "INSERT INTO evidence(created_at, tool_name, args_excerpt, excerpt, chars, sha256, "
                 "conversation_id, session_id, tool_call_id, cited) VALUES(?,?,?,?,?,?,?,?,?,1)",
-                (stamp(), "search_board_test", json.dumps({"command": command})[:ARGS_EXCERPT],
+                (stamp(), "pwn_board_test", json.dumps({"command": command})[:ARGS_EXCERPT],
                  excerpt(body), len(body), hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(),
                  conversation_id or "", session_id or "", ""),
             )
@@ -1015,7 +1015,7 @@ class Store:
             # that can be run again and doesn't block reconciliation.
             flow.verifier_state = "failed"
             if flow.verifier_report and not flow.verifier_note:
-                flow.verifier_note = "stopped under an older search-board build"
+                flow.verifier_note = "stopped under an older pwn-board build"
         return flow
 
     @staticmethod
@@ -1129,7 +1129,7 @@ class Store:
                 raise Refused(f"'{board.name}' is in the operator's {flow.stage} already")
             open_notes = [n.id for n in self._review_notes(db, board) if n.answer is None]
             if open_notes:
-                raise Refused(f"answer the operator's review notes first (search_board_answer): {', '.join(open_notes)}")
+                raise Refused(f"answer the operator's review notes first (pwn_board_answer): {', '.join(open_notes)}")
             at = stamp()
             db.execute("INSERT OR REPLACE INTO reports VALUES(?,?,?,?)", (board.id, flow.round, report, at))
             db.execute("DELETE FROM files WHERE board_id=? AND round=?", (board.id, flow.round))
@@ -1166,7 +1166,7 @@ class Store:
             if flow.stage != "verification":
                 raise Refused(f"'{board.name}' is not in verification (it is {flow.stage})")
             if flow.own_report is not None:
-                raise Refused("you filed your own check already; reconcile with search_board_verification")
+                raise Refused("you filed your own check already; reconcile with pwn_board_verification")
             flow.own_verdict, flow.own_report = verdict, findings
             if flow.verifier_state in ("done", "failed"):
                 flow.verifier_told = 1  # it comes back in this call's answer
@@ -1183,7 +1183,7 @@ class Store:
             if flow.stage != "verification":
                 raise Refused(f"'{board.name}' is not in verification (it is {flow.stage})")
             if flow.own_report is None:
-                raise Refused("file your own check first (search_board_verify)")
+                raise Refused("file your own check first (pwn_board_verify)")
             if flow.verifier_state not in ("done", "failed"):
                 raise Refused("the independent verifier has not finished; reconcile when its report comes")
             flow.verdict, flow.verification, flow.verified_at = verdict, report, stamp()
@@ -1241,18 +1241,18 @@ class Store:
                 listed = "".join(f"\n  {n.id}: {n.text}" for n in open_notes)
                 count = f" with {len(open_notes)} note{'s' if len(open_notes) != 1 else ''}" if open_notes else ""
                 text = (f"The operator reviewed '{board.name}' and sent it back to you{count}. It is open again "
-                        f"(round {flow.round}).{listed}\nAnswer each of their notes with search_board_answer "
-                        "(search_board_read shows them), work on what they ask, then close it and write it up again "
-                        "with search_board_report: it goes back to their review.")
+                        f"(round {flow.round}).{listed}\nAnswer each of their notes with pwn_board_answer "
+                        "(pwn_board_read shows them), work on what they ask, then close it and write it up again "
+                        "with pwn_board_report: it goes back to their review.")
             elif source == "deliverable":
                 text = (f"The operator reopened '{board.name}' from their completed work"
                         f"{': ' + why if why else ''}. It is open again (round {flow.round}). Work on it, then "
-                        "close it and write it up again (search_board_report): it goes back to their review.")
+                        "close it and write it up again (pwn_board_report): it goes back to their review.")
             else:
                 done = "" if flow.verification else " (unfinished; the verifier's result will be dropped)"
                 text = (f"The operator sent '{board.name}' back from verification{': ' + why if why else ''}"
                         f"{done}. It is open again (round {flow.round}). Work on what the verification found, "
-                        "then close it and write it up again (search_board_report): it goes back to their review.")
+                        "then close it and write it up again (pwn_board_report): it goes back to their review.")
             self._push(db, text, wake=True, board=board)
             after = self._board(db.execute("SELECT * FROM boards WHERE id=?", (board.id,)).fetchone())
             return after, flow
@@ -1280,10 +1280,10 @@ class Store:
             self._push(db, (
                 f"The operator sent '{board.name}' to verification{' again, from their completed work' if again else ''}"
                 f"{open_part}. Check it yourself now, independently: from its goal, its test, the write-up and the "
-                f"delivered files (search_board_review shows them as delivered), not from memory of having done it. "
+                f"delivered files (pwn_board_review shows them as delivered), not from memory of having done it. "
                 "Run the test, read the files, try what the write-up claims. Then file your check with "
-                "search_board_verify. An independent verifier checks it too; its report is held from you until you "
-                "file yours. Then reconcile the two with search_board_verification."), wake=True, board=board)
+                "pwn_board_verify. An independent verifier checks it too; its report is held from you until you "
+                "file yours. Then reconcile the two with pwn_board_verification."), wake=True, board=board)
             return board, flow
 
     def to_review(self, name: str, why: str = "") -> tuple["Board", "Flow"]:
@@ -1341,7 +1341,7 @@ class Store:
             return self._board(db.execute("SELECT * FROM boards WHERE id=?", (board.id,)).fetchone()), flow
 
     def record_build(self, side: str, version: str) -> None:
-        """Which search-board build a process runs ('agent': the gateway's tools and hooks)."""
+        """Which pwn-board build a process runs ('agent': the gateway's tools and hooks)."""
         with self._db(write=True) as db:
             db.execute("INSERT OR REPLACE INTO meta VALUES(?, ?)", (f"build.{side}", str(version)))
 
@@ -1399,7 +1399,7 @@ class Store:
         elif decision == "reject":
             what = "not solved" if before.status == "proposed_solved" else "not exhausted"
             self.add_notice(f"The operator sent '{board.name}' back: {what}.{said} It is {board.status} again, and "
-                            "the reason is a note on it: read the board (search_board_read) and go on.",
+                            "the reason is a note on it: read the board (pwn_board_read) and go on.",
                             wake=True, board=board)
         return board
 
@@ -1515,9 +1515,9 @@ class Store:
             if flow.own_report is not None and not flow.verifier_told:
                 flow.verifier_told = 1
                 body = flow.verifier_report if ok else f"(the verifier failed: {note})"
-                text = (f"[search-board: the independent verifier's report, not operator input]\nThe verifier of "
+                text = (f"[pwn-board: the independent verifier's report, not operator input]\nThe verifier of "
                         f"'{board.name}' finished ({flow.verifier_state}, verdict {flow.verifier_verdict or 'none'}). "
-                        f"Reconcile it with your own check in search_board_verification.\n\n{body}")
+                        f"Reconcile it with your own check in pwn_board_verification.\n\n{body}")
                 self._push(db, text, wake=True, board=board)
             self._put_flow(db, flow)
             return text

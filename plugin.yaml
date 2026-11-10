@@ -1,33 +1,35 @@
-name: search-board
+name: pwn-board
 version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: >-
-  Search boards for problems with a known start, a testable goal and no known path. The agent
-  keeps a frontier of leads, records findings that must cite real tool results, and never scores
-  itself: the goal test is run through Hermes's terminal tool and the plugin writes the verdict.
-  A finished board goes through the operator's review (notes, rounds) and an independent
-  verification before it counts as delivered. /sboard and a Desktop pane drive all of it.
+  Pwn boards for Hermes Agent: a search structure for engagements with a known origin, a
+  testable goal and no known path. The agent keeps a frontier of intents, records findings that
+  must cite real tool output, and never scores itself -- the goal test runs through Hermes's
+  terminal tool and the plugin writes the verdict. A finished board goes through the operator's
+  review (notes, rounds) and an independent verification before it counts as delivered. The
+  board carries no offensive tooling of its own and makes no network calls. /pwnboard and a
+  Desktop pane drive all of it.
 author: t4lus
 license: MIT
-homepage: https://github.com/t4lus/search-board
-tags: [debugging, search, investigation, agents, desktop]
+homepage: https://github.com/t4lus/pwn-board
+tags: [pentest, security, search, investigation, agents, desktop]
 requires_hermes: ">=0.23.0"
 provides_tools:
-  - search_board_list
-  - search_board_open
-  - search_board_read
-  - search_board_leads
-  - search_board_claim
-  - search_board_finding
-  - search_board_rule_out
-  - search_board_test
-  - search_board_close
-  - search_board_report
-  - search_board_answer
-  - search_board_review
-  - search_board_verify
-  - search_board_verification
+  - pwn_board_list
+  - pwn_board_open
+  - pwn_board_read
+  - pwn_board_leads
+  - pwn_board_claim
+  - pwn_board_finding
+  - pwn_board_rule_out
+  - pwn_board_test
+  - pwn_board_close
+  - pwn_board_report
+  - pwn_board_answer
+  - pwn_board_review
+  - pwn_board_verify
+  - pwn_board_verification
 provides_hooks:
   - transform_tool_result
   - pre_llm_call

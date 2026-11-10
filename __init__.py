@@ -1,9 +1,13 @@
-"""search-board: a search structure for problems with an unknown path, and the workflow that
+"""pwn-board: a search structure for problems with an unknown path, and the workflow that
 takes a finished one through the operator's review and an independent verification.
 
-Ported from the board in s0ma. Registers the board tools, the evidence ledger, the standing
-block, the subagent tracker, the ``/sboard`` command, the bundled skill, and (on first use) the
-workflow's background thread. State lives in ``<hermes home>/plugin-data/search-board/boards.db``.
+The fact-intent-hint board model implemented here originates in Cairn
+(https://github.com/oritera/Cairn, AGPL-3.0). This is an independent implementation for Hermes
+and contains no Cairn source.
+
+Registers the board tools, the evidence ledger, the standing block, the subagent tracker, the
+``/pwnboard`` command, the bundled skill, and (on first use) the workflow's background thread.
+State lives in ``<hermes home>/plugin-data/pwn-board/boards.db``.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-PLUGIN = "search-board"
+PLUGIN = "pwn-board"
 DB_FILE = "boards.db"
 
 
@@ -60,7 +64,7 @@ def changed(board: str = "") -> None:
 
         broadcast_plugin_event(PLUGIN, "board.changed", {"board": board})
     except Exception as error:
-        log.debug("search-board: change event not sent: %s", error)
+        log.debug("pwn-board: change event not sent: %s", error)
 
 
 def session_key_of(kwargs: dict) -> str:
@@ -87,7 +91,7 @@ def ensure_poller() -> None:
             store().record_build("agent", build_version())
             _build_recorded = True
         except Exception as error:
-            log.debug("search-board: build not recorded: %s", error)
+            log.debug("pwn-board: build not recorded: %s", error)
 
 
 def register(ctx) -> None:
@@ -103,14 +107,14 @@ def register(ctx) -> None:
         _db_path = plugin_data_dir(PLUGIN) / DB_FILE
         _store = None
     except Exception as error:
-        log.debug("search-board: data dir not resolved at load: %s", error)
+        log.debug("pwn-board: data dir not resolved at load: %s", error)
     # Say which build the agent side runs, so the pane can tell when Hermes still has an older one
     # loaded. Only into a database that already exists: loading the plugin creates no files.
     try:
         if _db_path is not None and Path(_db_path).exists():
             store().record_build("agent", build_version())
     except Exception as error:
-        log.debug("search-board: build not recorded: %s", error)
+        log.debug("pwn-board: build not recorded: %s", error)
 
     proc = secrets.token_hex(8)  # this process: a verifier launched by another one is gone
     _poller = board_flow.Poller(store, board_flow.injector(ctx), proc)
@@ -168,7 +172,7 @@ def register(ctx) -> None:
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
 
-    def sboard(raw_args: str = "", *, platform: str = "", session_key: str = "", **_kwargs) -> str:
+    def pwnboard(raw_args: str = "", *, platform: str = "", session_key: str = "", **_kwargs) -> str:
         ensure_poller()
         text = board_commands.run(store(), raw_args)
         changed()
@@ -176,12 +180,12 @@ def register(ctx) -> None:
             _poller.deliver(store())  # a move that wakes the agent does it now, not in 3 s
         return board_commands.format_for(platform, text)
 
-    ctx.register_command("sboard", sboard, description="Search boards: show, review, verify, accept, send back",
+    ctx.register_command("pwnboard", pwnboard, description="Pwn boards: show, review, verify, accept, send back",
                          args_hint="[show|review|comment|back|verify|accept|discard|…] <board> …")
 
-    skill = Path(__file__).parent / "skills" / "search-board" / "SKILL.md"
+    skill = Path(__file__).parent / "skills" / "pwn-board" / "SKILL.md"
     if skill.exists():
         try:
-            ctx.register_skill("search-board", skill)
+            ctx.register_skill("pwn-board", skill)
         except Exception as error:  # an older Hermes without plugin skills still gets the tools
-            log.debug("search-board: skill not registered: %s", error)
+            log.debug("pwn-board: skill not registered: %s", error)

@@ -21,12 +21,12 @@ from .board_store import (
     parse_ref,
 )
 
-TOOLSET = "search_board"
+TOOLSET = "pwn_board"
 
 # Sessions of subagents, reported by the subagent_start hook; the verifiers among them.
 SUBAGENT_SESSIONS: set[str] = set()
 VERIFIER_SESSIONS: set[str] = set()
-READ_ONLY = ("search_board_list", "search_board_read", "search_board_review")
+READ_ONLY = ("pwn_board_list", "pwn_board_read", "pwn_board_review")
 _SUB_LOCK = threading.Lock()
 
 # Boards whose goal test is running in this process.
@@ -105,24 +105,24 @@ def _finding_view(f, at) -> dict:
 NAME = {"type": "string", "description": "The board's name, e.g. flaky-flush."}
 
 SCHEMAS = {
-    "search_board_list": {
-        "name": "search_board_list",
+    "pwn_board_list": {
+        "name": "pwn_board_list",
         "description": (
-            "List your search boards: name, title, status, how big the frontier is, how much of the "
+            "List your pwn boards: name, title, status, how big the frontier is, how much of the "
             "step budget is spent, and whether the operator left new notes. Cheap orientation: use it "
             "to see what searches are live before committing to one."
         ),
         "parameters": {"type": "object", "properties": {
             "all": {"type": "boolean", "description": "Include closed boards. Default false."}}},
     },
-    "search_board_open": {
-        "name": "search_board_open",
+    "pwn_board_open": {
+        "name": "pwn_board_open",
         "description": (
-            "Open a search board for a problem whose origin you know, whose goal you can test, and whose "
+            "Open a pwn board for a problem whose origin you know, whose goal you can test, and whose "
             "path you don't know: an intermittent failure, a regression hiding among many candidates, a "
             "number that has to cross a threshold. Not for plain to-do lists. Before building any "
             "structure, try the problem directly once: most problems are not actually hard. If that "
-            "works, run search_board_test and you are done in one step; if it doesn't, what you learned "
+            "works, run pwn_board_test and you are done in one step; if it doesn't, what you learned "
             "is your first findings and leads. goal_test_kind decides who says you succeeded: prefer "
             "'command', because a shell command's exit status is a verdict you don't author. The test "
             "is fixed once the board opens. 'judgment' and 'observation' boards can only reach "
@@ -139,8 +139,8 @@ SCHEMAS = {
                             "description": "Explorations allowed before the board suspends itself. Default 60."},
         }, "required": ["name", "title", "origin", "goal", "goal_test", "goal_test_kind"]},
     },
-    "search_board_read": {
-        "name": "search_board_read",
+    "pwn_board_read": {
+        "name": "pwn_board_read",
         "description": (
             "Read one board: the operator's notes first, then the frontier (open leads, highest "
             "priority first), then the most recent findings. This is your observe step: read before "
@@ -153,8 +153,8 @@ SCHEMAS = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Findings to return. Default 20."},
         }, "required": ["name"]},
     },
-    "search_board_leads": {
-        "name": "search_board_leads",
+    "pwn_board_leads": {
+        "name": "pwn_board_leads",
         "description": (
             "Declare directions worth trying that nobody has tried yet. Each needs a rationale naming "
             "the findings that suggest it: a direction you can't justify from what you know is a guess "
@@ -173,8 +173,8 @@ SCHEMAS = {
                 }, "required": ["direction", "rationale"]}},
         }, "required": ["name", "leads"]},
     },
-    "search_board_claim": {
-        "name": "search_board_claim",
+    "pwn_board_claim": {
+        "name": "pwn_board_claim",
         "description": (
             "Claim one open lead before exploring it, so two workers never explore the same branch. "
             "This can fail: if somebody else holds it you get ok:false and pick another rather than "
@@ -183,8 +183,8 @@ SCHEMAS = {
         "parameters": {"type": "object", "properties": {
             "name": NAME, "lead": {"type": "string", "description": "e.g. Intent 4 (L4 also works)."}}, "required": ["name", "lead"]},
     },
-    "search_board_finding": {
-        "name": "search_board_finding",
+    "pwn_board_finding": {
+        "name": "pwn_board_finding",
         "description": (
             "Record exactly one thing an exploration showed, citing the tool results that show it. While "
             "a board is open every tool result you receive carries an evidence id ('_evidence': 'e12' in "
@@ -206,8 +206,8 @@ SCHEMAS = {
                               "description": "For basis 'inferred', the findings this was reasoned from."},
         }, "required": ["name", "statement", "polarity", "basis", "evidence"]},
     },
-    "search_board_rule_out": {
-        "name": "search_board_rule_out",
+    "pwn_board_rule_out": {
+        "name": "pwn_board_rule_out",
         "description": (
             "Mark a lead ruled out because a finding eliminated it. Requires that finding (polarity "
             "'rules_out'): a branch you merely lost interest in stays on the frontier, and a branch ruled "
@@ -218,8 +218,8 @@ SCHEMAS = {
             "finding": {"type": "string", "description": "A 'rules_out' finding on this board that eliminates it."},
         }, "required": ["name", "lead", "finding"]},
     },
-    "search_board_test": {
-        "name": "search_board_test",
+    "pwn_board_test": {
+        "name": "pwn_board_test",
         "description": (
             "Ask the plugin to run this board's goal test. It runs the command through Hermes's terminal "
             "tool (normal approvals apply) and writes the verdict as a finding itself; you never report "
@@ -228,8 +228,8 @@ SCHEMAS = {
         ),
         "parameters": {"type": "object", "properties": {"name": NAME}, "required": ["name"]},
     },
-    "search_board_close": {
-        "name": "search_board_close",
+    "pwn_board_close": {
+        "name": "pwn_board_close",
         "description": (
             "Close a board without a passing test. 'solved' is not available to you: a passing goal "
             "test does that, and on a judgment or observation board the most you can reach is "
@@ -245,17 +245,17 @@ SCHEMAS = {
         }, "required": ["name", "status", "rationale"]},
     },
     # ---- the workflow: write-up → the operator's review → verification → complete
-    "search_board_report": {
-        "name": "search_board_report",
+    "pwn_board_report": {
+        "name": "pwn_board_report",
         "description": (
-            "Write up a finished board for the operator's review: after search_board_close proposed_solved or "
-            "proposed_exhausted, or a passing search_board_test. The write-up is markdown: what was done, how it "
+            "Write up a finished board for the operator's review: after pwn_board_close proposed_solved or "
+            "proposed_exhausted, or a passing pwn_board_test. The write-up is markdown: what was done, how it "
             "was checked, what is left or uncertain (for proposed_exhausted: what was tried, what each attempt "
             "ruled out, and why nothing is left). `files` are the paths of the files that make up the work "
             "(code, configs, outputs, logs): they are read now and kept as delivered, and the operator reviews "
             "them with the write-up. The board then waits in the operator's review: they send it back with "
             "notes, or on to verification. When a board comes back with notes, answer every one "
-            "(search_board_answer) before writing it up again."
+            "(pwn_board_answer) before writing it up again."
         ),
         "parameters": {"type": "object", "properties": {
             "name": NAME,
@@ -264,10 +264,10 @@ SCHEMAS = {
                       "description": "Paths of the files that make up the work (files, not folders)."},
         }, "required": ["name", "report"]},
     },
-    "search_board_answer": {
-        "name": "search_board_answer",
+    "pwn_board_answer": {
+        "name": "pwn_board_answer",
         "description": (
-            "Answer one of the operator's review notes on a board they sent back (search_board_read shows them "
+            "Answer one of the operator's review notes on a board they sent back (pwn_board_read shows them "
             "under workflow.review): what they asked, or what you did with what they suggested and why. Every "
             "note needs an answer before the board can be written up again."
         ),
@@ -276,8 +276,8 @@ SCHEMAS = {
             "answer": {"type": "string"},
         }, "required": ["name", "note", "answer"]},
     },
-    "search_board_review": {
-        "name": "search_board_review",
+    "pwn_board_review": {
+        "name": "pwn_board_review",
         "description": (
             "Read a board's write-up as delivered: the latest report, the delivered files (or one file's "
             "content as it was delivered, with `file`), and the operator's review notes with your answers. "
@@ -287,11 +287,11 @@ SCHEMAS = {
             "name": NAME, "file": {"type": "string", "description": "A delivered file's path, to read it."},
         }, "required": ["name"]},
     },
-    "search_board_verify": {
-        "name": "search_board_verify",
+    "pwn_board_verify": {
+        "name": "pwn_board_verify",
         "description": (
             "Your own check of a board the operator sent to verification, made independently: from the goal, the "
-            "test and the delivered files (search_board_review), not from memory of having done it. Run the test, "
+            "test and the delivered files (pwn_board_review), not from memory of having done it. Run the test, "
             "read the files, try the claims. An independent verifier checks it too; its report is held from you "
             "until you file this, and comes back in this call's answer if it is done."
         ),
@@ -300,10 +300,10 @@ SCHEMAS = {
             "findings": {"type": "string", "description": "What you checked, how, and what you found, claim by claim."},
         }, "required": ["name", "verdict", "findings"]},
     },
-    "search_board_verification": {
-        "name": "search_board_verification",
+    "pwn_board_verification": {
+        "name": "pwn_board_verification",
         "description": (
-            "The verification report for the operator, reconciling your own check (search_board_verify) with the "
+            "The verification report for the operator, reconciling your own check (pwn_board_verify) with the "
             "independent verifier's: where they agree, where they differ and which is right, and the verdict. It "
             "goes to the operator, who accepts the board as delivered or sends it back to work."
         ),
@@ -315,21 +315,21 @@ SCHEMAS = {
 }
 
 # What a subagent may do: work a search the main agent opened. Opening, closing and the workflow stay with it.
-WORKER_TOOLS = ("search_board_list", "search_board_read", "search_board_leads", "search_board_claim",
-                "search_board_finding", "search_board_rule_out", "search_board_test", "search_board_review")
+WORKER_TOOLS = ("pwn_board_list", "pwn_board_read", "pwn_board_leads", "pwn_board_claim",
+                "pwn_board_finding", "pwn_board_rule_out", "pwn_board_test", "pwn_board_review")
 
 
-WRITES = {"search_board_open", "search_board_leads", "search_board_claim", "search_board_finding",
-          "search_board_rule_out", "search_board_test", "search_board_close", "search_board_report",
-          "search_board_answer", "search_board_verify", "search_board_verification"}
+WRITES = {"pwn_board_open", "pwn_board_leads", "pwn_board_claim", "pwn_board_finding",
+          "pwn_board_rule_out", "pwn_board_test", "pwn_board_close", "pwn_board_report",
+          "pwn_board_answer", "pwn_board_verify", "pwn_board_verification"}
 
 
 def write_up_text(board) -> str:
     if board.status == "proposed_exhausted":
-        return ("Write it up for the operator with search_board_report: what was tried, what each attempt ruled "
+        return ("Write it up for the operator with pwn_board_report: what was tried, what each attempt ruled "
                 "out, why nothing is left to try, and the files that show it. It goes to their review: they close "
                 "it exhausted, or send it back.")
-    return ("Write it up for the operator with search_board_report: what was done, how it was checked, what is "
+    return ("Write it up for the operator with pwn_board_report: what was done, how it was checked, what is "
             "left or uncertain, and the files that make up the work. It goes to their review, then to "
             "verification.")
 
@@ -368,7 +368,7 @@ class Tools:
         self._session_key_of = session_key_of or (lambda kwargs: "")
 
     def handler(self, name: str) -> Callable[..., str]:
-        method = getattr(self, name.replace("search_board_", "do_"))
+        method = getattr(self, name.replace("pwn_board_", "do_"))
 
         def handle(args: dict, **kwargs) -> str:
             args = with_refs(args if isinstance(args, dict) else {})
@@ -396,7 +396,7 @@ class Tools:
                                next="Pick another lead from the frontier rather than retrying this one.")
                 return _no(text)
             except Exception as error:  # never raise into the agent loop
-                return _no(f"search-board failed: {type(error).__name__}: {error}")
+                return _no(f"pwn-board failed: {type(error).__name__}: {error}")
 
         return handle
 
@@ -429,7 +429,7 @@ class Tools:
                              "actually test this goal, abandon this board and open one that uses it.")
         return _ok(board=_board_view(board), next=(
             "Try the problem directly, once, before building any structure. If that works, "
-            "search_board_test. If it doesn't, what you learned is your first findings and leads. "
+            "pwn_board_test. If it doesn't, what you learned is your first findings and leads. "
             "From now on every tool result carries an evidence id you can cite."), **extra)
 
     def do_read(self, store: Store, args: dict, *, subagent: bool, **_) -> str:
@@ -522,7 +522,7 @@ class Tools:
     def do_test(self, store: Store, args: dict, *, worker: str, subagent: bool, kwargs: dict, **_) -> str:
         board = store.board(str(args.get("name") or "").strip())
         if board is None:
-            return _no(f"no board named '{args.get('name')}' (see search_board_list)")
+            return _no(f"no board named '{args.get('name')}' (see pwn_board_list)")
         if board.status != "open":
             return _no(f"'{board.name}' is {board.status}; the goal test runs only on an open board")
         if board.goal_test_kind == "judgment":
@@ -538,7 +538,7 @@ class Tools:
         with _TEST_LOCK:
             if board.id in _TESTS_RUNNING:
                 return _no(f"the goal test for '{board.name}' is already running; its verdict will be a "
-                           "finding on the board (search_board_read shows it)")
+                           "finding on the board (pwn_board_read shows it)")
             _TESTS_RUNNING.add(board.id)
         try:
             outcome, exit_code, output, error = runner(board.goal_test, TEST_TIMEOUT_SECS, kwargs)
@@ -615,7 +615,7 @@ class Tools:
         left = store.answer(args.get("name"), args.get("note"), str(args.get("answer") or ""))
         return _ok(unanswered=left, note=(
             "All of the operator's notes are answered. When the work is done, close the board (or pass its test) "
-            "and write it up again with search_board_report." if not left else "Answer the rest too."))
+            "and write it up again with pwn_board_report." if not left else "Answer the rest too."))
 
     def do_review(self, store: Store, args: dict, **_) -> str:
         name = str(args.get("name") or "").strip()
@@ -637,10 +637,10 @@ class Tools:
         if flow.verifier_state in ("done", "failed"):
             return _ok(verifier={"state": flow.verifier_state, "verdict": flow.verifier_verdict,
                                  "report": flow.verifier_report or flow.verifier_note or ""},
-                       note="Reconcile the two with search_board_verification.")
+                       note="Reconcile the two with pwn_board_verification.")
         return _ok(verifier={"state": flow.verifier_state},
                    note="The independent verifier is still at it; its report comes to you when it finishes. "
-                        "Then reconcile with search_board_verification.")
+                        "Then reconcile with pwn_board_verification.")
 
     def do_verification(self, store: Store, args: dict, **_) -> str:
         store.reconcile(args.get("name"), str(args.get("verdict") or ""), str(args.get("report") or ""))
@@ -663,9 +663,9 @@ def workflow_view(store: Store, board) -> Optional[dict]:
                           for n in wf.notes]
         open_notes = [n.id for n in wf.notes if n.answer is None]
         if open_notes and flow.stage == "working":
-            view["answer_first"] = f"Answer {', '.join(open_notes)} with search_board_answer before writing it up again."
+            view["answer_first"] = f"Answer {', '.join(open_notes)} with pwn_board_answer before writing it up again."
     if flow.stage == "verification":
-        view["your_check"] = flow.own_verdict or "not filed: search_board_verify"
+        view["your_check"] = flow.own_verdict or "not filed: pwn_board_verify"
         if flow.own_report is None:
             view["verifier"] = "held until you file your own check"
         else:

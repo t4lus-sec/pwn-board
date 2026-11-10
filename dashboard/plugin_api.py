@@ -1,6 +1,6 @@
-"""Backend routes for the Desktop pane, mounted at ``/api/plugins/search-board/``.
+"""Backend routes for the Desktop pane, mounted at ``/api/plugins/pwn-board/``.
 
-They read and write the same database as the agent's tools and ``/sboard``. Only
+They read and write the same database as the agent's tools and ``/pwnboard``. Only
 the operator's actions are offered here: notes, extend, confirm, exhaust, reject,
 abandon, and the workflow's moves (review notes, send back, to verification, to
 review, accept, discard, run a failed verifier again). Nothing here writes a lead,
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException
 
-PLUGIN = "search-board"
+PLUGIN = "pwn-board"
 DB_FILE = "boards.db"
 
 router = APIRouter()
@@ -25,7 +25,7 @@ router = APIRouter()
 def _load_store_module():
     # board_store.py has no imports of its own package, so it loads on its own from beside us.
     path = Path(__file__).resolve().parents[1] / "board_store.py"
-    spec = importlib.util.spec_from_file_location("search_board_dashboard_store", path)
+    spec = importlib.util.spec_from_file_location("pwn_board_dashboard_store", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -86,7 +86,7 @@ BUILD = _build_version()
 
 @router.get("/build")
 def build():
-    """Which search-board build this backend runs, and which one the agent side last said it runs.
+    """Which pwn-board build this backend runs, and which one the agent side last said it runs.
     The pane compares both with its own, to tell when Hermes still has an older build loaded."""
     try:
         agent = _db().build("agent")

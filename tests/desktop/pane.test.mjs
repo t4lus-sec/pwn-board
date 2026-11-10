@@ -17,7 +17,7 @@ const { createRoot } = await import('react-dom/client')
 const plugin = (await import('./.plugin.under-test.js')).default
 const { buildTree, visibleRows, plainText, staleBuild, BUILD } = await import('./.plugin.under-test.js')
 const sdk = await import('@hermes/plugin-sdk')
-// Written by the real backend routes: SEARCH_BOARD_PANE_FIXTURE=tests/desktop/fixture.json pytest -k fixture
+// Written by the real backend routes: PWN_BOARD_PANE_FIXTURE=tests/desktop/fixture.json pytest -k fixture
 const fixture = JSON.parse(readFileSync(new URL('./fixture.json', import.meta.url), 'utf8'))
 
 // --- the tree, without React
@@ -37,10 +37,10 @@ assert.deepEqual(visibleRows(bare, {}).map(r => r.id), ['origin'], 'the origin i
 assert.equal(staleBuild(null), null)
 assert.equal(staleBuild({ api: BUILD, agent: BUILD }), null)
 assert.equal(staleBuild({ api: BUILD, agent: null }), null, 'no word from the agent side yet is not an alarm')
-assert.match(staleBuild({ api: null, agent: null }), /older search-board backend \(before 0\.2\.0.*hermes gateway restart/)
-assert.match(staleBuild({ api: '0.1.0', agent: '0.1.0' }), /older search-board backend \(0\.1\.0/)
-assert.match(staleBuild({ api: '9.0.0', agent: '9.0.0' }), /This pane is an older search-board build.*desktop half off and on/)
-assert.match(staleBuild({ api: BUILD, agent: '0.1.0' }), /agent side is still running search-board 0\.1\.0.*hermes gateway restart/)
+assert.match(staleBuild({ api: null, agent: null }), /older pwn-board backend \(before 0\.2\.0.*hermes gateway restart/)
+assert.match(staleBuild({ api: '0.1.0', agent: '0.1.0' }), /older pwn-board backend \(0\.1\.0/)
+assert.match(staleBuild({ api: '9.0.0', agent: '9.0.0' }), /This pane is an older pwn-board build.*desktop half off and on/)
+assert.match(staleBuild({ api: BUILD, agent: '0.1.0' }), /agent side is still running pwn-board 0\.1\.0.*hermes gateway restart/)
 assert.equal(staleBuild({ api: '0.2.0', agent: '0.2.0' }) === null, BUILD === '0.2.0')
 
 // --- one-line Markdown for tree rows
@@ -79,7 +79,7 @@ const ctx = {
   }
 }
 plugin.register(ctx)
-assert.equal(plugin.id, 'search-board')
+assert.equal(plugin.id, 'pwn-board')
 assert.equal(contributions.length, 1)
 assert.equal(contributions[0].area, 'panes')
 
@@ -105,7 +105,7 @@ assert.match(rowTexts()[4], /^Note 1newtry a 1 GB tmpfs/)
 assert.equal(document.querySelector('[role=treeitem]').getAttribute('aria-selected'), 'true', 'the origin is selected first')
 assert.match(text(), /Origin.*Copy.*origin.*CI fails about 2%.*goal.*fifty green runs/)
 assert.equal(storage.get('board'), 'flaky-flush')
-assert.ok(typeof listeners['plugin.search-board.board.changed'] === 'function')
+assert.ok(typeof listeners['plugin.pwn-board.board.changed'] === 'function')
 
 // --- the four tabs are always there
 const tabs = () => [...document.querySelectorAll('[role=tab]')]
@@ -239,13 +239,13 @@ buildAnswer = () => ({ api: BUILD, agent: '0.1.0' })
 const rootOld = createRoot(document.getElementById('root'))
 await act(async () => rootOld.render(contributions[0].render()))
 await settle()
-assert.match(document.querySelector('[role=alert]').textContent, /^Restart needed\. The agent side is still running search-board 0\.1\.0/)
+assert.match(document.querySelector('[role=alert]').textContent, /^Restart needed\. The agent side is still running pwn-board 0\.1\.0/)
 await act(async () => rootOld.unmount())
 buildAnswer = () => { const e = new Error('404: {"detail":"Not Found"}'); e.statusCode = 404; throw e }
 const rootOlder = createRoot(document.getElementById('root'))
 await act(async () => rootOlder.render(contributions[0].render()))
 await settle()
-assert.match(document.querySelector('[role=alert]').textContent, /older search-board backend \(before 0\.2\.0/)
+assert.match(document.querySelector('[role=alert]').textContent, /older pwn-board backend \(before 0\.2\.0/)
 await act(async () => rootOlder.unmount())
 buildAnswer = () => { throw new Error('connection refused') }
 const rootOffline = createRoot(document.getElementById('root'))

@@ -12,7 +12,7 @@ goal → leads → what each found → the leads that opened, one row each.
 - The operator's notes stand under the lead or finding they are about, after its
   own children; a note about nothing in particular stands under the board.
 
-Markers, as in s0ma: [+] done or for, [*] under way, [-] ruled out or failed,
+Markers follow the usual convention: [+] done or for, [*] under way, [-] ruled out or failed,
 [?] open, [!] wants the operator.
 """
 

@@ -1,5 +1,5 @@
 {
-  "name": "search-board-pane-test",
+  "name": "pwn-board-pane-test",
   "private": true,
   "type": "module",
   "scripts": { "test": "node pane.test.mjs" },

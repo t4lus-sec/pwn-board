@@ -1,5 +1,5 @@
 /**
- * search-board — the Desktop pane.
+ * pwn-board — the Desktop pane.
  *
  * Four tabs, always there: Board, Review, Verification, Complete.
  *
@@ -35,7 +35,7 @@ import { Component, useCallback, useEffect, useMemo, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const { PANES_AREA } = sdk
-const EVENT = 'plugin.search-board.board.changed'
+const EVENT = 'plugin.pwn-board.board.changed'
 /** This pane's build; plugin.yaml's version (a test keeps them equal). */
 export const BUILD = '0.2.0'
 
@@ -858,13 +858,13 @@ export function staleBuild(info) {
   if (!info) return null
   const restart = 'Run `hermes gateway restart` (or quit and reopen Hermes)'
   if (!info.api || newer(BUILD, info.api)) {
-    return `Hermes is still running an older search-board backend (${info.api || 'before 0.2.0'}; this pane is ${BUILD}). ${restart}, then reopen this pane.`
+    return `Hermes is still running an older pwn-board backend (${info.api || 'before 0.2.0'}; this pane is ${BUILD}). ${restart}, then reopen this pane.`
   }
   if (newer(info.api, BUILD)) {
-    return `This pane is an older search-board build (${BUILD}; installed: ${info.api}). In Capabilities → Plugins, switch search-board's desktop half off and on.`
+    return `This pane is an older pwn-board build (${BUILD}; installed: ${info.api}). In Capabilities → Plugins, switch pwn-board's desktop half off and on.`
   }
   if (info.agent && info.agent !== BUILD) {
-    return `The agent side is still running search-board ${info.agent} (this pane is ${BUILD}), so tools, hooks and the verifier are the old ones. ${restart}.`
+    return `The agent side is still running pwn-board ${info.agent} (this pane is ${BUILD}), so tools, hooks and the verifier are the old ones. ${restart}.`
   }
   return null
 }
@@ -921,7 +921,7 @@ function BoardPane({ ctx }) {
           setName(first.name)
         }
       })
-      .catch(e => live && setFailure(`Can't reach the search-board backend: ${e?.message ?? e}. Is the plugin enabled for this profile?`))
+      .catch(e => live && setFailure(`Can't reach the pwn-board backend: ${e?.message ?? e}. Is the plugin enabled for this profile?`))
     return () => { live = false }
   }, [ctx, tick])
 
@@ -944,8 +944,8 @@ function BoardPane({ ctx }) {
   if (failure) return jsx('div', { style: { ...S.pad, ...S.muted }, children: failure })
   if (!boards.length) {
     return jsx(Empty, {
-      title: 'No search boards yet',
-      children: 'The agent opens one with search_board_open when a problem has a testable goal and no known path.'
+      title: 'No pwn boards yet',
+      children: 'The agent opens one with pwn_board_open when a problem has a testable goal and no known path.'
     })
   }
   const b = snap?.board
@@ -984,13 +984,13 @@ function BoardPane({ ctx }) {
 }
 
 export default {
-  id: 'search-board',
-  name: 'Search boards',
+  id: 'pwn-board',
+  name: 'Pwn boards',
   register(ctx) {
     ctx.register({
       id: 'pane',
       area: PANES_AREA,
-      title: 'search boards',
+      title: 'pwn boards',
       data: { placement: 'right', width: '420px' },
       render: () => jsx(BoardPane, { ctx })
     })

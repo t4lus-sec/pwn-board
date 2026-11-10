@@ -92,8 +92,8 @@ def file_reader(dispatch: Callable[..., str], kwargs: dict) -> Callable[[str], s
 
 # ---------------------------------------------------------------- the verifier
 
-MARKER = "[search-board verifier {token}]"
-MARKER_RE = re.compile(r"\[search-board verifier ([0-9a-f]{16})\]")
+MARKER = "[pwn-board verifier {token}]"
+MARKER_RE = re.compile(r"\[pwn-board verifier ([0-9a-f]{16})\]")
 
 
 def verifier_task(board, token: str) -> str:
@@ -201,13 +201,13 @@ class Verifiers:
                 return
             for job in store.take_cancels():
                 try:
-                    service.cancel(json.loads(job), reason="search-board: the board moved on")
+                    service.cancel(json.loads(job), reason="pwn-board: the board moved on")
                 except Exception as error:
-                    log.debug("search-board: verifier not cancelled: %s", error)
+                    log.debug("pwn-board: verifier not cancelled: %s", error)
             for board_id, token in store.verifiers_wanted():
                 self._launch(store, service, board_id, token)
         except Exception as error:
-            log.debug("search-board: verifiers: %s", error)
+            log.debug("pwn-board: verifiers: %s", error)
         finally:
             self._lock.release()
 
@@ -218,8 +218,8 @@ class Verifiers:
         last_error = "no toolset choice worked"
         for toolsets in TOOLSET_CHOICES:
             request = {"goal": goal, "context": context, "role": "leaf",
-                       "correlation_id": f"search-board-{board_id}-{token}",
-                       "metadata": {"plugin": "search-board", "board_id": board_id}}
+                       "correlation_id": f"pwn-board-{board_id}-{token}",
+                       "metadata": {"plugin": "pwn-board", "board_id": board_id}}
             if toolsets:
                 request["allowed_toolsets"] = toolsets
             try:
@@ -235,7 +235,7 @@ class Verifiers:
             job = json.dumps(handle.to_dict() if hasattr(handle, "to_dict") else dict(handle))
             if not store.verifier_launched(board_id, token, job, self.proc):
                 try:
-                    service.cancel(handle, reason="search-board: the board moved on")
+                    service.cancel(handle, reason="pwn-board: the board moved on")
                 except Exception:
                     pass
             return
@@ -284,7 +284,7 @@ class Poller:
 
     def start(self) -> None:
         if self._thread is None:
-            self._thread = threading.Thread(target=self._loop, name="search-board-workflow", daemon=True)
+            self._thread = threading.Thread(target=self._loop, name="pwn-board-workflow", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
@@ -295,7 +295,7 @@ class Poller:
             try:
                 self.tick()
             except Exception as error:  # keep polling: one bad pass must not end the workflow
-                log.debug("search-board poller: %s", error)
+                log.debug("pwn-board poller: %s", error)
 
     def tick(self) -> None:
         with self._lock:
@@ -310,7 +310,7 @@ class Poller:
             try:
                 ok = bool(self._inject(text, session_key))
             except Exception as error:
-                log.debug("search-board: wake-up not delivered: %s", error)
+                log.debug("pwn-board: wake-up not delivered: %s", error)
                 ok = False
             store.mark_woken(notice_id, ok)  # not taken: it goes with the agent's next turn
 
@@ -319,7 +319,7 @@ def injector(ctx) -> Callable[[str, Optional[str]], bool]:
     def inject(text: str, session_key: Optional[str]) -> bool:
         if not session_key:
             return False
-        content = f"[search-board, rendered by the plugin]\n{text}"
+        content = f"[pwn-board, rendered by the plugin]\n{text}"
         return bool(ctx.inject_message(content, role="user", session_key=session_key))
 
     return inject

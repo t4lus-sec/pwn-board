@@ -1,4 +1,4 @@
-// Test stub of the Desktop SDK: only what search-board uses.
+// Test stub of the Desktop SDK: only what pwn-board uses.
 import { createElement } from 'react'
 
 export const PANES_AREA = 'panes'

@@ -32,7 +32,7 @@ PRUNE_EVERY = 200
 _counter = 0
 _counter_lock = threading.Lock()
 
-BLOCK_HEADER = "[search boards: current state, rendered by the search-board plugin]"
+BLOCK_HEADER = "[pwn boards: current state, rendered by the pwn-board plugin]"
 
 
 def tag_result(result: str, evidence_id: int) -> str:
@@ -54,7 +54,7 @@ def make_tool_result_hook(store_of: Callable[[], Store]):
     def on_tool_result(tool_name: str = "", args=None, result=None, **kwargs):
         global _counter
         try:
-            if not isinstance(result, str) or not tool_name or tool_name.startswith("search_board_"):
+            if not isinstance(result, str) or not tool_name or tool_name.startswith("pwn_board_"):
                 return None
             store = store_of()
             if not store.any_live():
@@ -72,7 +72,7 @@ def make_tool_result_hook(store_of: Callable[[], Store]):
                 store.prune_evidence()
             return tag_result(result, evidence_id)
         except Exception as error:  # fail open: never break a tool result
-            log.debug("search-board evidence hook failed: %s", error)
+            log.debug("pwn-board evidence hook failed: %s", error)
             return None
 
     return on_tool_result
@@ -93,15 +93,15 @@ def make_context_hook(store_of: Callable[[], Store]):
                 for board in boards[:6]:
                     lines.append(render.board_line(board, store.counts(board)))
                 if len(boards) > 6:
-                    lines.append(f"· …and {len(boards) - 6} more (search_board_list)")
-                lines.append("search_board_read <name> for the graph. Nothing here advances on its own. "
+                    lines.append(f"· …and {len(boards) - 6} more (pwn_board_list)")
+                lines.append("pwn_board_read <name> for the graph. Nothing here advances on its own. "
                              "While a board is open, tool results carry evidence ids to cite in findings.")
             if notices:
                 lines.append("The operator, since your last turn:")
                 lines.extend(notices)
             return {"context": "\n".join(lines)}
         except Exception as error:
-            log.debug("search-board context hook failed: %s", error)
+            log.debug("pwn-board context hook failed: %s", error)
             return None
 
     return on_pre_llm_call
