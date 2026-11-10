@@ -32,3 +32,4 @@ provides_hooks:
   - transform_tool_result
   - pre_llm_call
   - subagent_start
+  - subagent_stop

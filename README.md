@@ -77,16 +77,20 @@ any stage ──you: discard──▶ discarded
    agent names the files that make up the work. The plugin reads them through Hermes's `read_file`,
    so it works with any terminal backend, and keeps them as they were at that moment. You review
    what was delivered, not what is on disk now.
-2. **Review.** You read the write-up and the files and leave notes (R1, R2…).
+2. **Review.** You read the write-up and the files and leave review notes (Review note 1, 2…).
    - **Send it back**, and the board opens again in a new round. The agent must answer every note
      before it can write the board up again.
    - **Send it to verification** when you're satisfied.
 3. **Verification.** Two checks run independently:
-   - **The independent verifier** is a separate model call. It sees only the board, the write-up,
-     the delivered files, your notes with the answers, and every finding with the tool output that
-     finding cites. It's told not to trust the write-up and to judge each claim. It can't run
-     commands, but the goal-test verdicts it reads were recorded by the plugin, not written by the
-     agent.
+   - **The independent verifier** is a Hermes subagent, launched through Hermes's subagent
+     lifecycle (`ctx.subagent_lifecycle`) as a leaf child of the main agent. It starts with none of
+     the agent's conversation: only the board, the write-up, the delivered files, your notes with
+     the answers, and every finding with the tool output it cites. It's told not to trust the
+     write-up and to check each claim on the machine: it gets the terminal and file tools (within
+     what the parent session has), runs the goal test, and reads and builds the delivered files.
+     It can read the board but not change it. Hermes only starts subagents during an agent turn, so
+     the verifier starts at the agent's next turn (at once, if you've allowed the plugin to start
+     turns; see below). Its report comes back through the `subagent_stop` hook.
    - **The agent's own check** can use tools: it re-runs the test and reads the delivered files.
    - The verifier's report is **held from the agent until it has filed its own check**. Then the
      agent reconciles the two into one report, with a verdict.
@@ -108,7 +112,8 @@ plugins:
       allow_gateway_injection: true
 ```
 
-Without that, the agent hears with your next message, in that session or any other.
+Without that, the agent hears with your next message, in that session or any other, and a
+verifier you sent a board to starts then.
 
 ## What you get
 
@@ -117,9 +122,9 @@ Without that, the agent hears with your next message, in that session or any oth
 ```
 /sboard                      boards that are live or waiting for you
 /sboard show <name> [all]    the board as a tree
-/sboard detail <name> <id>   one lead, finding or note in full (a finding with its evidence)
-/sboard note <name> [L3:] <text>   leave a note, optionally about a lead or finding
-/sboard unnote <name> <N2>   take a note off
+/sboard detail <name> <ref>  one intent, finding or note in full, e.g. "Finding 2" (with its evidence)
+/sboard note <name> [Intent 3:] <text>   leave a note, optionally about an intent or finding
+/sboard unnote <name> <Note 2>      take a note off
 /sboard confirm|exhaust <name>      accept a proposal
 /sboard reject <name> [why]  send a proposal back; your reason becomes a note
 /sboard extend <name> <steps>       give a suspended board more steps
@@ -128,7 +133,7 @@ Without that, the agent hears with your next message, in that session or any oth
 /sboard review <name>        the write-up, the files as delivered, your review notes and the answers
 /sboard file <name> <path>   one delivered file, as delivered
 /sboard comment <name> <text>      leave a review note
-/sboard uncomment <name> <R2>      take back a note the agent hasn't answered
+/sboard uncomment <name> <Review note 2>   take back a note the agent hasn't answered
 /sboard back <name> [why]    send it back to work (a new round)
 /sboard verify <name>        send it to verification
 /sboard verification <name>  both checks and the reconciled report
@@ -146,14 +151,14 @@ that opened.
 │  open · steps 3/60 · frontier 1 · 3 findings · opened 12 min ago
 │  goal: 50 green runs
 │  test (command): pytest tests/test_flush.py --count 50
-├─ [?] L2 (p5) Check fsync ordering in the writer thread
-├─ [+] L1 (p8) Reproduce locally with --count 50
-│  └─ [+] F1 Fails 3/50 locally, always ENOSPC from flush() [e1]
-│     └─ [*] L4 (p7) Measure /tmp size inside the test container — the main agent exploring, 2 min ago
-│        └─ [!] N1 note: the container mounts /tmp as a 64 MB tmpfs
-├─ [+] L3 (p5) Check CI runner disk space
-│  └─ [-] F2 Runner disk has 37 GB free [e2]
-└─ [-] F3 (goal test) Goal test failed (exit 1): `pytest tests/test_flush.py --count 50`. [e3]
+├─ [?] Intent 2 · p5 — Check fsync ordering in the writer thread
+├─ [+] Intent 1 · p8 · explored — Reproduce locally with --count 50
+│  └─ [+] Finding 1 · supports — Fails 3/50 locally, always ENOSPC from flush() (e1)
+│     └─ [*] Intent 4 · p7 · exploring (the main agent, 2 min ago) — Measure /tmp inside the container
+│        └─ [!] Note 1 · new — the container mounts /tmp as a 64 MB tmpfs
+├─ [+] Intent 3 · p5 · explored — Check CI runner disk space
+│  └─ [-] Finding 2 · rules out — Runner disk has 37 GB free (e2)
+└─ [-] Finding 3 · goal test · failed — Goal test failed (exit 1): `pytest tests/test_flush.py --count 50`. (e3)
 ```
 
 The markers mean:
@@ -164,8 +169,13 @@ The markers mean:
 - `[?]` open;
 - `[!]` wants you (a proposal, a suspended board, or a note the agent hasn't read).
 
-**The Desktop pane** ("search boards") shows the same tree live, with folding. Its Review and
-Verification tabs show the write-up, the files as delivered, your notes with the agent's answers,
+**The Desktop pane** ("search boards") shows the same tree live, with folding, color-coded by
+kind (blue intents, green and red findings, yellow notes) and a stepper across the top:
+Search → Write-up → Review → Verify → Complete. Its four tabs, Board, Review, Verification and
+Complete, are there from the start; a tab that waits on you gets a dot.
+
+![The pane: Board, Review and Verification tabs](docs/pane-dark.png)
+ The workflow tabs show the write-up, the files as delivered, your notes with the agent's answers,
 both checks and the reconciled report, with every workflow move as a button. Click a row for
 its full text; a finding also shows the tool output it cites. Below that you can leave a note
 about the selected lead or finding, take a note off, confirm or send back a proposal, extend
@@ -201,18 +211,23 @@ the pane.
 - **Delivered files.** `search_board_report` reads the files the agent names through Hermes's
   `read_file` tool (at most 30 files and 2 million characters) and keeps them in the plugin's
   database.
-- **The verifier calls your model.** Each verification makes one call to your configured model
-  through Hermes's `ctx.llm`. It sends the board, the write-up, the delivered files, your review
-  notes and the tool output the findings cite. It uses your active provider and credentials; the
-  plugin never sees a token.
+- **The verifier is a subagent.** Each verification launches one Hermes subagent through
+  `ctx.subagent_lifecycle`, with role `leaf` and the `terminal` and `file` toolsets (narrowed to
+  what the parent session allows). It runs commands and reads files under Hermes's own rules
+  for child agents: the same backend, approvals and limits as any subagent. Its goal and context
+  carry the board, the write-up, the delivered files, your review notes and the tool output the
+  findings cite (at most 30,000 characters of context). It uses your configured model and
+  credentials; the plugin never sees a token. Like any delegation, it's reported to an external
+  memory provider if you use one. If the board moves on (sent back, discarded), the verifier is
+  cancelled at the next turn.
 - **Starting turns.** If you grant `allow_gateway_injection`, your workflow moves start a turn in
   the board's session through `ctx.inject_message`. Without it, nothing is injected.
 - **A background thread.** On first use, a daemon thread starts. Every 3 seconds it reads the
-  plugin's own database to start verifiers and deliver those turns. It stops when the plugin
-  unloads.
+  plugin's own database to deliver those turns and to notice a verifier that a restart cut
+  off. It never launches anything itself. It stops when the plugin unloads.
 - **Context injection.** The `pre_llm_call` hook adds a few lines (one per board, plus your
   recent decisions) to the main agent's current turn. Nothing is persisted.
-- **What the plugin doesn't do.** No network calls of its own (the verifier's goes through Hermes), no telemetry, no credentials, no
+- **What the plugin doesn't do.** No network calls of its own (the verifier's model calls go through Hermes), no telemetry, no credentials, no
   background processes, no shell commands of its own, and no self-updater.
 - **The Desktop pane's backend.** It talks only to this plugin's own routes
   (`/api/plugins/search-board/…`). Those routes read boards, evidence and the workflow, and

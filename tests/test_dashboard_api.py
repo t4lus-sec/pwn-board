@@ -88,7 +88,7 @@ def test_pane_fixture(api, tmp_path):
     store.comment("flaky-flush", "Did you try arm64?")
     store.to_verification("flaky-flush")
     [(board_id, token)] = store.verifiers_wanted()
-    store.verifier_start(board_id, token)
+    store.verifier_launched(board_id, token, "{}", "proc")
     store.verifier_finish(board_id, token, ok=True, verdict="passed", report="VERDICT: passed\n\nThe compose file shows 1 GB.")
     store.own_check("flaky-flush", "passed", "Re-ran the goal test: fifty runs pass. The compose file is right.")
     store.reconcile("flaky-flush", "passed", "Both checks agree: the fix is the tmpfs size, and the test passes.")

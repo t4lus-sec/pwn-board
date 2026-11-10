@@ -9,6 +9,7 @@ workflow's background thread. State lives in ``<hermes home>/plugin-data/search-
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 from pathlib import Path
 
@@ -21,6 +22,7 @@ _store = None
 _store_lock = threading.Lock()
 _db_path = None  # fixed at register(), in this plugin's own profile
 _poller = None
+_verifiers = None
 
 
 def store():
@@ -69,9 +71,9 @@ def ensure_poller() -> None:
 def register(ctx) -> None:
     # Imported here, not at module level, so this file imports on its own (test collectors do that).
     from . import board_commands, board_flow, board_hooks
-    from .board_tools import SCHEMAS, TOOLSET, Tools, terminal_runner
+    from .board_tools import SCHEMAS, TOOLSET, Tools, is_subagent, terminal_runner
 
-    global _db_path, _poller, _store
+    global _db_path, _poller, _store, _verifiers
     try:
         from plugins.plugin_storage import plugin_data_dir
 
@@ -80,10 +82,19 @@ def register(ctx) -> None:
     except Exception as error:
         log.debug("search-board: data dir not resolved at load: %s", error)
 
-    llm = getattr(ctx, "llm", None)
-    complete = getattr(llm, "complete_structured", None) if llm is not None else None
-    _poller = board_flow.Poller(store, complete, board_flow.injector(ctx), changed)
+    proc = secrets.token_hex(8)  # this process: a verifier launched by another one is gone
+    _poller = board_flow.Poller(store, board_flow.injector(ctx), proc)
     ctx.on_unload(_poller.stop)
+    _verifiers = board_flow.Verifiers(store, lambda: getattr(ctx, "subagent_lifecycle", None), proc)
+
+    def main_turn(kwargs: dict) -> bool:
+        session = str(kwargs.get("session_id") or "")
+        return not kwargs.get("parent_session_id") and not is_subagent(session)
+
+    def in_turn(kwargs: dict) -> None:
+        """Anything that can only happen during an agent turn: launching and cancelling verifiers."""
+        if main_turn(kwargs):
+            _verifiers.in_turn()
 
     runner = terminal_runner(ctx.dispatch_tool)
     tools = Tools(store, lambda: runner, changed,
@@ -94,20 +105,38 @@ def register(ctx) -> None:
 
         def with_poller(args, _handler=handler, **kwargs):
             ensure_poller()
-            return _handler(args, **kwargs)
+            result = _handler(args, **kwargs)
+            in_turn(kwargs)  # after the call: a verification it asked for can start now
+            return result
 
         ctx.register_tool(name=name, toolset=TOOLSET, schema=schema, handler=with_poller,
                           description=schema["description"].split(". ")[0], emoji="🧭")
 
     context_hook = board_hooks.make_context_hook(store)
+    evidence_hook = board_hooks.make_tool_result_hook(store)
 
     def on_pre_llm_call(**kwargs):
         ensure_poller()
+        in_turn(kwargs)
         return context_hook(**kwargs)
 
-    ctx.register_hook("transform_tool_result", board_hooks.make_tool_result_hook(store))
+    def on_tool_result(**kwargs):
+        in_turn(kwargs)
+        return evidence_hook(**kwargs)
+
+    def on_subagent_start(**kwargs):
+        board_hooks.on_subagent_start(**kwargs)
+        _verifiers.on_child_start(**kwargs)
+
+    def on_subagent_stop(**kwargs):
+        if _verifiers.on_child_stop(**kwargs):
+            changed()
+            _poller.deliver(store())  # if the agent filed its check already, it hears now
+
+    ctx.register_hook("transform_tool_result", on_tool_result)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
-    ctx.register_hook("subagent_start", board_hooks.on_subagent_start)
+    ctx.register_hook("subagent_start", on_subagent_start)
+    ctx.register_hook("subagent_stop", on_subagent_stop)
 
     def sboard(raw_args: str = "", *, platform: str = "", session_key: str = "", **_kwargs) -> str:
         ensure_poller()

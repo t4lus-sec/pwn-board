@@ -25,6 +25,9 @@ there is nothing to search.
 
 ## The loop
 
+The board names things the way the operator sees them: Intent 3 (a lead), Finding 2, Note 1,
+Review note 1. Tools take those names or the short ids (L3, F2, N1, R1).
+
 1. **Read** (`search_board_read`). The operator's notes come first: weigh them, don't just obey them.
 2. **Declare leads** (`search_board_leads`): concrete directions with a rationale that names the
    findings behind them. Seed leads at the start have no `from_findings`; later ones should.
@@ -49,12 +52,13 @@ A board that passed its test, or that you closed proposed_solved / proposed_exha
 **write-up** (`search_board_report`): what was done, how it was checked, what is left or uncertain,
 and the paths of the files that make up the work. The files are read now and kept as delivered.
 
-1. **Review.** The operator reads it and may leave notes (R1, R2…). If they send it back, the board
+1. **Review.** The operator reads it and may leave review notes (Review note 1, 2…). If they send it back, the board
    is open again in a new round: answer every note with `search_board_answer`, do the work, close
    it again (or pass the test), and write it up again.
 2. **Verification.** If they send it on, check it yourself, independently: read what was delivered
    (`search_board_review`), run the test, try each claim. File it with `search_board_verify`. An
-   independent verifier checks it too; you see its report only after filing your own.
+   independent verifier, a subagent the plugin starts in your turn, checks it too; leave it be (it
+   isn't yours to direct or read). You see its report only after filing your own.
 3. **Reconcile** the two in `search_board_verification`: where they agree, where they differ and
    which is right, and the verdict. The operator accepts it as complete or sends it back.
 

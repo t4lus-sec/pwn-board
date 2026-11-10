@@ -15,15 +15,18 @@ import json
 import threading
 from typing import Callable, Optional
 
-from . import board_flow, board_render as render
+from . import board_render as render
 from .board_store import (
-    MAX_EVIDENCE_PER_FINDING, MAX_LEADS_PER_CALL, MAX_STEP_BUDGET, Refused, Store, now_utc,
+    MAX_EVIDENCE_PER_FINDING, MAX_LEADS_PER_CALL, MAX_STEP_BUDGET, Refused, Store, label, labels, now_utc,
+    parse_ref,
 )
 
 TOOLSET = "search_board"
 
-# Sessions of subagents, reported by the subagent_start hook.
+# Sessions of subagents, reported by the subagent_start hook; the verifiers among them.
 SUBAGENT_SESSIONS: set[str] = set()
+VERIFIER_SESSIONS: set[str] = set()
+READ_ONLY = ("search_board_list", "search_board_read", "search_board_review")
 _SUB_LOCK = threading.Lock()
 
 # Boards whose goal test is running in this process.
@@ -77,10 +80,10 @@ def _board_view(board, counts: Optional[dict] = None) -> dict:
 
 
 def _lead_view(lead, at) -> dict:
-    view = {"id": lead.id, "direction": lead.direction, "rationale": lead.rationale,
+    view = {"id": lead.id, "label": label(lead.id), "direction": lead.direction, "rationale": lead.rationale,
             "priority": lead.priority, "state": lead.state}
     if lead.from_findings:
-        view["from_findings"] = lead.from_findings
+        view["from_findings"] = [label(x) for x in lead.from_findings]
     if lead.state == "claimed":
         view["state"] = "open (claim went stale)" if lead.claim_expired(at) else "claimed"
         view["claimed"] = f"by {render.holder(lead.claimed_by)}, {render.ago(lead.claimed_at, at)}"
@@ -88,7 +91,7 @@ def _lead_view(lead, at) -> dict:
 
 
 def _finding_view(f, at) -> dict:
-    view = {"id": f.id, "statement": f.statement, "polarity": f.polarity, "basis": f.basis,
+    view = {"id": f.id, "label": label(f.id), "statement": f.statement, "polarity": f.polarity, "basis": f.basis,
             "evidence": [f"e{x}" for x in f.evidence], "recorded": render.ago(f.created_at, at)}
     if f.author != "model":
         view["by"] = "the goal test" if f.author == "plugin" else f.author
@@ -165,7 +168,7 @@ SCHEMAS = {
                     "direction": {"type": "string", "description": "What to try, concrete enough to act on."},
                     "rationale": {"type": "string", "description": "Why this looks worth trying, naming the findings that suggest it."},
                     "from_findings": {"type": "array", "items": {"type": "string"},
-                                      "description": "Findings this descends from, e.g. ['F3']. Empty only for leads seeded at the start."},
+                                      "description": "Findings this descends from, e.g. ['Finding 3'] (F3 also works). Empty only for leads seeded at the start."},
                     "priority": {"type": "integer", "minimum": 0, "maximum": 9, "description": "Higher explores first. Default 5."},
                 }, "required": ["direction", "rationale"]}},
         }, "required": ["name", "leads"]},
@@ -178,7 +181,7 @@ SCHEMAS = {
             "retrying. A claim goes stale after half an hour and returns to the frontier."
         ),
         "parameters": {"type": "object", "properties": {
-            "name": NAME, "lead": {"type": "string", "description": "e.g. L4."}}, "required": ["name", "lead"]},
+            "name": NAME, "lead": {"type": "string", "description": "e.g. Intent 4 (L4 also works)."}}, "required": ["name", "lead"]},
     },
     "search_board_finding": {
         "name": "search_board_finding",
@@ -269,7 +272,7 @@ SCHEMAS = {
             "note needs an answer before the board can be written up again."
         ),
         "parameters": {"type": "object", "properties": {
-            "name": NAME, "note": {"type": "string", "description": "e.g. R2."},
+            "name": NAME, "note": {"type": "string", "description": "e.g. Review note 2 (R2 also works)."},
             "answer": {"type": "string"},
         }, "required": ["name", "note", "answer"]},
     },
@@ -331,6 +334,28 @@ def write_up_text(board) -> str:
             "verification.")
 
 
+REF_ARGS = ("lead", "finding", "note")
+REF_LIST_ARGS = ("from_findings",)
+
+
+def with_refs(args: dict) -> dict:
+    """The board shows 'Intent 3', 'Finding 2', 'Review note 1'; the agent may pass those or L3/F2/R1."""
+    out = dict(args)
+    for key in REF_ARGS:
+        if isinstance(out.get(key), str) and out[key].strip():
+            out[key] = parse_ref(out[key])
+    for key in REF_LIST_ARGS:
+        if isinstance(out.get(key), list):
+            out[key] = [parse_ref(x) if isinstance(x, str) else x for x in out[key]]
+    leads = out.get("leads")
+    if isinstance(leads, list):
+        out["leads"] = [dict(x, from_findings=[parse_ref(f) if isinstance(f, str) else f
+                                               for f in x.get("from_findings") or []])
+                        if isinstance(x, dict) and isinstance(x.get("from_findings"), list) else x
+                        for x in leads]
+    return out
+
+
 class Tools:
     def __init__(self, store_of: Callable[[], Store], runner: Callable[[], Optional[Runner]],
                  changed: Optional[Callable[[str], None]] = None,
@@ -346,8 +371,10 @@ class Tools:
         method = getattr(self, name.replace("search_board_", "do_"))
 
         def handle(args: dict, **kwargs) -> str:
-            args = args if isinstance(args, dict) else {}
+            args = with_refs(args if isinstance(args, dict) else {})
             worker, subagent = worker_of(kwargs)
+            if str(kwargs.get("session_id") or "") in VERIFIER_SESSIONS and name not in READ_ONLY:
+                return _no("a verifier only reads the board; put what you found in your report")
             if subagent and name not in WORKER_TOOLS:
                 return _no("opening and closing boards is the main agent's; say what you found in your report")
             try:
@@ -572,7 +599,9 @@ class Tools:
         paths = args.get("files") or []
         if paths and self._reader is None:
             return _no("delivered files can't be read in this session (no read_file tool)")
-        files = board_flow.snapshot_files(self._reader(kwargs), paths) if paths else []
+        from .board_flow import snapshot_files  # here: board_flow imports this module
+
+        files = snapshot_files(self._reader(kwargs), paths) if paths else []
         board, flow = store.submit_report(name, str(args.get("report") or ""), files)
         unread = [f["path"] for f in files if f["error"]]
         extra = {"not_kept": unread} if unread else {}

@@ -4,20 +4,23 @@
 ``read_file`` tool, so they come from wherever the agent works (local, Docker, SSH…), and kept as
 they were at that moment: the operator reviews what was delivered, not what is there now.
 
-**The verifier.** When the operator sends a board to verification, the plugin asks a model, in a
-call of its own, to check the work. It sees only the board, the write-up, the delivered files, the
-review, and every finding with the tool output that finding cites — nothing of the agent's
-conversation. It is told not to trust the write-up. It runs off the agent's turn (``ctx.llm``),
-so it cannot run commands; the goal test's verdicts it reads were recorded by the plugin, not
-written by the agent. Its report is held from the agent until the agent has filed its own check.
+**The verifier.** When the operator sends a board to verification, the plugin launches a fresh
+subagent through Hermes's public lifecycle API (``ctx.subagent_lifecycle``), the same host path
+``delegate_task`` uses: a child session with terminal and file tools that runs the goal test and
+checks the work on the machine. It is told not to trust the write-up, and is given only the board,
+the write-up, the files as delivered, the review and the findings with the tool output they cite —
+nothing of the agent's conversation. Its report comes back to the plugin through ``subagent_stop``,
+not into the agent's context, and is held from the agent until the agent has filed its own check.
+Hermes lets a plugin launch a child only during an agent turn, so it starts at the main agent's
+next turn (the wake-up below starts one).
 
 **Waking.** A move that needs the agent (sent back, sent to verification, the verifier's report
 once the agent may see it) starts a turn in the session that last worked on the board, through
 ``ctx.inject_message``. Hermes allows that only with ``allow_gateway_injection: true`` for this
 plugin; otherwise, and whenever no session takes it, the agent hears with its next turn.
 
-A small background thread does both: it starts verifiers the operator asked for and delivers
-wake-ups. It reads and writes only this plugin's database.
+A small background thread delivers the wake-ups and notices verifiers lost to a restart. It reads
+and writes only this plugin's database.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import threading
 from typing import Callable, Optional
 
 from .board_store import MAX_FILE_CHARS, MAX_FILES, MAX_FILES_CHARS, Refused, Store
+from .board_tools import VERIFIER_SESSIONS
 
 log = logging.getLogger(__name__)
 
@@ -88,39 +92,47 @@ def file_reader(dispatch: Callable[..., str], kwargs: dict) -> Callable[[str], s
 
 # ---------------------------------------------------------------- the verifier
 
-VERIFIER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["passed", "failed"]},
-        "claims": {"type": "array", "items": {"type": "object", "properties": {
-            "claim": {"type": "string"},
-            "status": {"type": "string", "enum": ["supported", "unsupported", "contradicted", "unverifiable"]},
-            "why": {"type": "string"},
-        }, "required": ["claim", "status", "why"]}},
-        "missing": {"type": "array", "items": {"type": "string"}},
-        "report": {"type": "string"},
-    },
-    "required": ["verdict", "claims", "report"],
-}
+MARKER = "[search-board verifier {token}]"
+MARKER_RE = re.compile(r"\[search-board verifier ([0-9a-f]{16})\]")
 
-VERIFIER_INSTRUCTIONS = """You verify a finished piece of work for its operator, independently.
 
-An agent searched for a solution, finished, and wrote it up. You did not do the work and you do not
-trust the write-up. Check each of its claims against what is in front of you:
-- the board: its origin, goal and goal test;
-- the findings: each cites tool output, shown under it — the output is real, the finding's wording is the agent's;
-- the goal test runs: recorded by the plugin, which ran them; the agent did not write their verdicts;
-- the files as delivered, and the operator's review notes with the agent's answers.
+def verifier_task(board, token: str) -> str:
+    """The verifier's goal: the board, where the work is, what to check, and the shape of its report.
+    It knows nothing else of the work, and nothing of the agent's conversation."""
+    return f"""{MARKER.format(token=token)}
+Verify board '{board.name}' for the operator, independently.
 
-For every claim in the write-up: supported (the material shows it), unsupported (nothing shows it),
-contradicted (the material shows otherwise), or unverifiable (it would need running something).
-Look for what is missing, wrong, untested or overstated. A command goal test that has not passed
-since the work was last changed is a reason to fail. Be specific: name the finding, the evidence id,
-the file and line.
+An agent finished this piece of work and wrote it up. You check it, on your own: do not trust the
+write-up, check each of its claims yourself, on the machine.
 
-verdict: passed only if the goal is met and the central claims are supported; otherwise failed.
-report: markdown, starting with the verdict, then what you checked and found, claim by claim, and
-what you could not check."""
+Board: {board.name} — {board.title}
+Goal: {board.goal}
+Goal test ({board.goal_test_kind}): {board.goal_test}
+
+The context holds the write-up, the files it delivered (as they were delivered, with the paths they
+were taken from), the operator's review notes with the agent's answers, and the findings with the tool
+output each cites. Read the write-up. Run the goal test if it is a command. Read the delivered files
+on the machine and check they are what was delivered and do what the write-up says: build them, run
+their tests, try them. Look for what is missing, wrong, untested or overstated. Change nothing outside
+/tmp. You have no part in the board itself: do not try to change it.
+
+End your reply with your verification report, in this form:
+VERDICT: passed (or: VERDICT: failed)
+then what you checked, how, and what you found, claim by claim, and what you could not check."""
+
+
+def verdict_of(report: str) -> str:
+    """`VERDICT: passed` (or failed) in a verifier's report."""
+    lower = (report or "").lower()
+    at = lower.rfind("verdict:")
+    if at < 0:
+        return "unclear"
+    rest = lower[at + len("verdict:"):].lstrip().lstrip("*").lstrip()
+    if rest.startswith("pass"):
+        return "passed"
+    if rest.startswith("fail"):
+        return "failed"
+    return "unclear"
 
 
 def verifier_input(material: dict, budget: int = 120_000) -> str:
@@ -160,52 +172,112 @@ def verifier_input(material: dict, budget: int = 120_000) -> str:
     return text
 
 
-def run_verifier(store: Store, complete: Callable[..., object], board_id: str, token: str) -> Optional[str]:
-    """One verification, start to finish. Returns the wake text when the agent may now see it."""
-    if not store.verifier_start(board_id, token):
-        return None
-    try:
+TOOLSET_CHOICES = (("terminal", "file"), ("file",), None)
+
+
+class Verifiers:
+    """Launches verifier subagents through Hermes's public lifecycle API, and takes their reports.
+
+    Hermes lets a plugin launch a child only while an agent turn is active, so launching happens in
+    the main agent's turns (``in_turn``, from its hooks and the board's tools). The report comes back
+    through the ``subagent_stop`` hook, matched by the child's session; it goes to the board, never
+    into the agent's context, and is held from the agent until it has filed its own check.
+    """
+
+    def __init__(self, store_of: Callable[[], Store], service_of: Callable[[], object], proc: str):
+        self._store_of = store_of
+        self._service_of = service_of
+        self.proc = proc
+        self._lock = threading.Lock()
+
+    def in_turn(self) -> None:
+        """Launch wanted verifiers, cancel dropped ones. Never raises."""
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            store = self._store_of()
+            service = self._service_of()
+            if service is None:
+                return
+            for job in store.take_cancels():
+                try:
+                    service.cancel(json.loads(job), reason="search-board: the board moved on")
+                except Exception as error:
+                    log.debug("search-board: verifier not cancelled: %s", error)
+            for board_id, token in store.verifiers_wanted():
+                self._launch(store, service, board_id, token)
+        except Exception as error:
+            log.debug("search-board: verifiers: %s", error)
+        finally:
+            self._lock.release()
+
+    def _launch(self, store: Store, service, board_id: str, token: str) -> None:
         material = store.verifier_material(board_id)
-        result = complete(instructions=VERIFIER_INSTRUCTIONS, input=[{"type": "text", "text": verifier_input(material)}],
-                          json_schema=VERIFIER_SCHEMA, schema_name="board_verification",
-                          purpose="search-board.verify", temperature=0.0)
-        parsed = getattr(result, "parsed", None)
-        if not isinstance(parsed, dict) or parsed.get("verdict") not in ("passed", "failed"):
-            raw = str(getattr(result, "text", "") or "")[:2000]
-            return store.verifier_finish(board_id, token, ok=False, verdict=None, report=raw,
-                                         note="the verifier's answer could not be read")
-        return store.verifier_finish(board_id, token, ok=True, verdict=parsed["verdict"],
-                                     report=format_verifier_report(parsed))
-    except Exception as error:
-        log.warning("search-board: verifier for %s failed: %s", board_id, error)
-        return store.verifier_finish(board_id, token, ok=False, verdict=None, report="",
-                                     note=f"{type(error).__name__}: {error}"[:500])
+        goal = verifier_task(material["board"], token)
+        context = verifier_input(material, budget=30_000)
+        last_error = "no toolset choice worked"
+        for toolsets in TOOLSET_CHOICES:
+            request = {"goal": goal, "context": context, "role": "leaf",
+                       "correlation_id": f"search-board-{board_id}-{token}",
+                       "metadata": {"plugin": "search-board", "board_id": board_id}}
+            if toolsets:
+                request["allowed_toolsets"] = toolsets
+            try:
+                handle = service.launch(request)
+            except Exception as error:
+                last_error = f"{type(error).__name__}: {error}"
+                text = str(error).lower()
+                if "no active hermes parent" in text:
+                    return  # not in a turn: try again in the next one, without counting it
+                if "toolset" in text or "broaden" in text:
+                    continue  # narrower tools, then the parent's own
+                break
+            job = json.dumps(handle.to_dict() if hasattr(handle, "to_dict") else dict(handle))
+            if not store.verifier_launched(board_id, token, job, self.proc):
+                try:
+                    service.cancel(handle, reason="search-board: the board moved on")
+                except Exception:
+                    pass
+            return
+        store.verifier_not_launched(board_id, token, last_error)
 
+    def on_child_start(self, child_session_id=None, child_goal=None, **_kwargs) -> None:
+        match = MARKER_RE.search(str(child_goal or ""))
+        if match and child_session_id:
+            VERIFIER_SESSIONS.add(str(child_session_id))
+            self._store_of().verifier_child(match.group(1), str(child_session_id))
 
-def format_verifier_report(parsed: dict) -> str:
-    lines = [f"VERDICT: {parsed['verdict']}", "", str(parsed.get("report") or "").strip()]
-    claims = parsed.get("claims") or []
-    if claims:
-        lines += ["", "## Claim by claim"]
-        lines += [f"- [{c.get('status', '?')}] {c.get('claim', '')} — {c.get('why', '')}" for c in claims]
-    missing = parsed.get("missing") or []
-    if missing:
-        lines += ["", "## Missing or not checked"] + [f"- {m}" for m in missing]
-    return "\n".join(lines).strip()
+    def on_child_stop(self, child_session_id=None, child_summary=None, child_status=None, **_kwargs) -> bool:
+        """A verifier finished: its report goes on the board (and to the agent, if it filed its own
+        check already). True when the child was one of ours."""
+        if not child_session_id:
+            return False
+        store = self._store_of()
+        found = store.verifier_of_child(str(child_session_id))
+        if found is None:
+            return False
+        board_id, token = found
+        summary = str(child_summary or "").strip()
+        ok = str(child_status or "") == "completed" and bool(summary)
+        verdict = verdict_of(summary) if ok else None
+        note = None if ok else f"the verifier ended {child_status or 'without a status'}"
+        if ok and verdict == "unclear":
+            note = "the verifier's report has no VERDICT line"
+        store.verifier_finish(board_id, token, ok=ok, verdict=verdict, report=summary, note=note)
+        return True
 
 
 # ---------------------------------------------------------------- waking and the poller
 
 
 class Poller:
-    """Starts wanted verifiers and delivers wake-ups, every few seconds, until stopped."""
+    """Delivers wake-ups and revives verifiers whose process went away, every few seconds."""
 
-    def __init__(self, store_of: Callable[[], Store], complete: Optional[Callable[..., object]],
-                 inject: Optional[Callable[[str, Optional[str]], bool]], changed: Callable[[str], None]):
+    def __init__(self, store_of: Callable[[], Store], inject: Optional[Callable[[str, Optional[str]], bool]],
+                 proc: str):
         self._store_of = store_of
-        self._complete = complete
         self._inject = inject
-        self._changed = changed
+        self._proc = proc
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -226,20 +298,10 @@ class Poller:
                 log.debug("search-board poller: %s", error)
 
     def tick(self) -> None:
-        """One pass. Verifiers run in threads of their own so a slow model call holds up nothing."""
         with self._lock:
             store = self._store_of()
-            store.revive_stale_verifiers()
-            if self._complete is not None:
-                for board_id, token in store.verifiers_wanted():
-                    threading.Thread(target=self._verify, args=(store, board_id, token),
-                                     name=f"search-board-verifier-{board_id}", daemon=True).start()
+            store.revive_orphans(self._proc)
             self.deliver(store)
-
-    def _verify(self, store: Store, board_id: str, token: str) -> None:
-        run_verifier(store, self._complete, board_id, token)
-        self._changed(board_id)
-        self.deliver(store)
 
     def deliver(self, store: Store) -> None:
         if self._inject is None:

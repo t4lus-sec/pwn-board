@@ -6,7 +6,7 @@ leads (each naming the findings it came from). So the view draws
 goal → leads → what each found → the leads that opened, one row each.
 
 - A node with more than one parent sits under the first and says where else it
-  came from ("also F2").
+  came from ("also from Finding 2").
 - Leads being explored come first, then open ones by priority, then explored;
   ruled-out leads go last and, unless asked for, are folded into one row.
 - The operator's notes stand under the lead or finding they are about, after its
@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from .board_store import Board, Finding, Lead, Note, Snapshot, ago, now_utc
+from .board_store import Board, Finding, Lead, Note, Snapshot, ago, label, labels, now_utc, parse_ref
 
 STATUS_MARK = {
     "open": "[*]", "suspended": "[!]", "proposed_solved": "[!]", "proposed_exhausted": "[!]",
@@ -109,22 +109,28 @@ class _Tree:
         at = self.at
         if key in self.leads:
             lead = self.leads[key]
-            text = f"{lead_mark(lead, at)} {lead.id} (p{lead.priority}) {lead.direction}"
+            parts = [f"{lead_mark(lead, at)} {label(lead.id)}", f"p{lead.priority}"]
             if lead.state == "claimed" and not lead.claim_expired(at):
-                text += f" — {holder(lead.claimed_by)} exploring, {ago(lead.claimed_at, at)}"
+                parts.append(f"exploring ({holder(lead.claimed_by)}, {ago(lead.claimed_at, at)})")
+            elif lead.state == "explored":
+                parts.append("explored")
             elif lead.state == "ruled_out":
-                text += f" — ruled out by {lead.closed_by}"
+                parts.append(f"ruled out by {label(lead.closed_by)}")
+            text = " · ".join(parts) + f" — {lead.direction}"
         elif key in self.findings:
             f = self.findings[key]
-            who = {"plugin": " (goal test)", "operator": " (operator)"}.get(f.author, "")
+            kind = {"plugin": "goal test", "operator": "by you"}.get(f.author)
+            what = ("passed" if f.polarity == "supports" else "failed") if f.author == "plugin" else (
+                "supports" if f.polarity == "supports" else "rules out")
+            parts = [f"{finding_mark(f)} {label(f.id)}"] + ([kind] if kind else []) + [what]
             cites = ", ".join(f"e{x}" for x in f.evidence)
-            text = f"{finding_mark(f)} {f.id}{who} {f.statement} [{cites}]"
+            text = " · ".join(parts) + f" — {f.statement} ({cites})"
         else:
             n = self.notes[key]
-            text = f"{'[!]' if n.read_at is None else '[ ]'} {n.id} note: {n.text}"
+            text = f"{'[!]' if n.read_at is None else '[ ]'} {label(n.id)}{' · new' if n.read_at is None else ''} — {n.text}"
         also = self.also.get(key)
         if also:
-            text += f" (also {', '.join(also)})"
+            text += f" (also from {labels(also)})"
         return _clip(text, width)
 
 
@@ -153,7 +159,7 @@ def tree(snap: Snapshot, *, width: int = 110, fold_ruled_out: bool = True,
             kids = [k for k in kids if k not in folded]
         rows: list[tuple[str, Optional[str]]] = [(k, None) for k in kids]
         if folded:
-            rows.append(("", f"[-] {len(folded)} ruled out: {', '.join(folded)}"))
+            rows.append(("", f"[-] {len(folded)} ruled out: {labels(folded)}"))
         for index, (child, summary) in enumerate(rows):
             last = index == len(rows) - 1
             branch = "└─ " if last else "├─ "
@@ -164,7 +170,7 @@ def tree(snap: Snapshot, *, width: int = 110, fold_ruled_out: bool = True,
 
     walk("board", "")
     if not snap.leads and not snap.findings:
-        lines.append("└─ (nothing yet: no leads declared, nothing found)")
+        lines.append("└─ (nothing yet: no intents declared, nothing found)")
     return "\n".join(lines)
 
 
@@ -172,7 +178,7 @@ def detail(snap: Snapshot, key: str, evidence: Optional[list] = None,
            at: Optional[datetime] = None) -> str:
     """One node in full: what the tree can only show cut."""
     at = at or now_utc()
-    key = key.strip().upper()
+    key = parse_ref(key)
     b = snap.board
     if key in ("", "BOARD", b.name.upper()):
         return "\n".join([
@@ -181,23 +187,23 @@ def detail(snap: Snapshot, key: str, evidence: Optional[list] = None,
         ] + ([f"outcome: {b.outcome}"] if b.outcome else []))
     for lead in snap.leads:
         if lead.id == key:
-            out = [f"{lead_mark(lead, at)} {lead.id} — {lead.state.replace('_', ' ')}, priority {lead.priority}",
+            out = [f"{lead_mark(lead, at)} {label(lead.id)} — {lead.state.replace('_', ' ')}, priority {lead.priority}",
                    f"direction: {lead.direction}", f"rationale: {lead.rationale}"]
             if lead.from_findings:
-                out.append(f"came from: {', '.join(lead.from_findings)}")
+                out.append(f"came from: {labels(lead.from_findings)}")
             if lead.state == "claimed":
                 out.append(f"claimed by {holder(lead.claimed_by)}, {ago(lead.claimed_at, at)}")
             if lead.closed_by:
-                out.append(f"{'explored in' if lead.state == 'explored' else 'ruled out by'} {lead.closed_by}")
+                out.append(f"{'explored in' if lead.state == 'explored' else 'ruled out by'} {label(lead.closed_by)}")
             return "\n".join(out)
     for f in snap.findings:
         if f.id == key:
-            out = [f"{finding_mark(f)} {f.id} — {f.polarity}, {f.basis}, by {f.author}, {ago(f.created_at, at)}",
+            out = [f"{finding_mark(f)} {label(f.id)} — {f.polarity.replace('_', ' ')}, {f.basis}, by {'the goal test' if f.author == 'plugin' else f.author}, {ago(f.created_at, at)}",
                    f"statement: {f.statement}"]
             if f.from_lead:
-                out.append(f"explored: {f.from_lead}")
+                out.append(f"explored: {label(f.from_lead)}")
             if f.from_findings:
-                out.append(f"inferred from: {', '.join(f.from_findings)}")
+                out.append(f"inferred from: {labels(f.from_findings)}")
             for ev in evidence or []:
                 out.append(f"--- e{ev.id}: {ev.tool_name} {ev.args_excerpt[:200]} "
                            f"({ev.chars} chars, sha256 {ev.sha256[:12]}, {ago(ev.created_at, at)})")
@@ -205,10 +211,10 @@ def detail(snap: Snapshot, key: str, evidence: Optional[list] = None,
             return "\n".join(out)
     for n in snap.notes:
         if n.id == key:
-            return "\n".join([f"{n.id} — note from the operator, {ago(n.created_at, at)}"
-                              + (f", about {n.about}" if n.about else ""),
+            return "\n".join([f"{label(n.id)} — your note, {ago(n.created_at, at)}"
+                              + (f", about {label(n.about)}" if n.about else ""),
                               n.text, "read by the agent" if n.read_at else "not read yet"])
-    return f"no {key} on '{b.name}'"
+    return f"no {label(key)} on '{b.name}'"
 
 
 def board_line(board: Board, counts: dict) -> str:
@@ -244,7 +250,7 @@ def review(wf) -> str:
     lines.append("\n— review notes —" if wf.notes else "\nNo review notes.")
     for n in wf.notes:
         answer = f"\n      agent: {n.answer}" if n.answer else "\n      (not answered yet)"
-        lines.append(f"  [{'+' if n.answer else '?'}] {n.id} (round {n.round}): {n.text}{answer}")
+        lines.append(f"  [{'+' if n.answer else '?'}] {label(n.id)} (round {n.round}): {n.text}{answer}")
     return "\n".join(lines)
 
 

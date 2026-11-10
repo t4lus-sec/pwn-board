@@ -107,6 +107,23 @@ def test_open_declare_claim_find(t, store):
     assert read["findings"][0]["evidence"] == [e]
 
 
+def test_tools_take_the_labels_the_board_shows(t, store):
+    """The board reads 'Intent 1', 'Finding 1'; an agent copying those must not be refused."""
+    open_board(t)
+    call(t, "search_board_leads", {"name": "flaky-flush", "leads": [
+        {"direction": "Reproduce with fifty runs", "rationale": "Need a repro first"},
+        {"direction": "Check CI runner disk space", "rationale": "ENOSPC in the CI log"}]})
+    assert call(t, "search_board_claim", {"name": "flaky-flush", "lead": "Intent 1"})["ok"]
+    found = call(t, "search_board_finding", {"name": "flaky-flush", "lead": "intent 1", "statement": "Fails 3 of 50 with ENOSPC",
+                                             "polarity": "supports", "basis": "observed", "evidence": [evidence(store)]})
+    assert found["ok"], found
+    assert found["finding"]["label"] == "Finding 1"
+    more = call(t, "search_board_leads", {"name": "flaky-flush", "leads": [
+        {"direction": "Measure /tmp inside the container", "rationale": "ENOSPC on flush", "from_findings": ["Finding 1"]}]})
+    assert more["ok"], more
+    assert more["declared"][0]["label"] == "Intent 3" and more["declared"][0]["from_findings"] == ["Finding 1"]
+
+
 def test_a_finding_must_cite_recorded_evidence(t, store):
     open_board(t)
     call(t, "search_board_leads", {"name": "flaky-flush", "leads": [{"direction": "Reproduce with fifty runs", "rationale": "Need a repro first"}]})
@@ -282,10 +299,23 @@ def test_a_subagent_read_leaves_notes_new(t, store):
 def test_notes_about_a_lead_and_taking_them_off(t, store):
     open_board(t)
     call(t, "search_board_leads", {"name": "flaky-flush", "leads": [{"direction": "Reproduce with fifty runs", "rationale": "Need a repro first"}]})
-    assert "about L1" in operator.run(store, "note flaky-flush L1: use the arm64 runner")
-    assert store.snapshot("flaky-flush").notes[0].about == "L1"
-    assert "taken off" in operator.run(store, "unnote flaky-flush N1")
+    assert "about Intent 1" in operator.run(store, "note flaky-flush L1: use the arm64 runner")
+    note = store.snapshot("flaky-flush").notes[0]
+    assert note.about == "L1" and note.text == "use the arm64 runner"
+    assert "about Intent 1" in operator.run(store, 'note flaky-flush "Intent 1: try it on arm64"')
+    assert "Note 1 taken off" in operator.run(store, "unnote flaky-flush Note 1")
+    assert "Note 2 taken off" in operator.run(store, "unnote flaky-flush N2")
     assert store.snapshot("flaky-flush").notes == []
+
+
+def test_refs_read_as_words_and_short_ids():
+    from search_board.board_store import label, parse_ref
+    for text, ref in [("Intent 3", "L3"), ("intent3", "L3"), ("I3", "L3"), ("L3", "L3"), ("lead 3", "L3"),
+                      ("Finding 12", "F12"), ("f2", "F2"), ("Note 1", "N1"), ("Review note 4", "R4"), ("r4", "R4"),
+                      ("board", "BOARD"), ("Intent 3 extra", "INTENT 3 EXTRA")]:
+        assert parse_ref(text) == ref, text
+    assert label("L3") == "Intent 3" and label("F12") == "Finding 12" and label("R4") == "Review note 4"
+    assert label("board") == "board"
 
 
 def test_budget_suspends_and_extend_reopens(t, store):
@@ -389,15 +419,16 @@ def test_the_tree_reads_as_leads_and_what_they_found(t, store):
     view = operator.run(store, "show flaky-flush")
     lines = view.splitlines()
     assert lines[0].startswith("[*] flaky-flush")
-    l1 = next(i for i, line in enumerate(lines) if "L1 (p8)" in line)
-    f1 = next(i for i, line in enumerate(lines) if "F1" in line and "Fails 3 of 50" in line)
-    l3 = next(i for i, line in enumerate(lines) if "L3" in line)
-    n1 = next(i for i, line in enumerate(lines) if "N1 note" in line)
+    l1 = next(i for i, line in enumerate(lines) if "[+] Intent 1 · p8 · explored — Reproduce" in line)
+    f1 = next(i for i, line in enumerate(lines) if "[+] Finding 1 · supports — Fails 3 of 50" in line)
+    l3 = next(i for i, line in enumerate(lines) if "[?] Intent 3 · p5 — Look at tmpfs" in line)
+    n1 = next(i for i, line in enumerate(lines) if "[!] Note 1 · new — the container has a 64 MB /tmp" in line)
     assert l1 < f1 < l3 < n1
-    assert lines[f1].index("[+] F1") > lines[l1].index("[+] L1")
-    assert lines[l3].index("L3") > lines[f1].index("F1")
-    detail = operator.run(store, "detail flaky-flush F1")
-    assert "ENOSPC" in detail and "--- e1: terminal" in detail
+    assert lines[f1].index("Finding 1") > lines[l1].index("Intent 1")
+    assert lines[l3].index("Intent 3") > lines[f1].index("Finding 1")
+    for ref in ("F1", "Finding 1", "finding 1"):
+        detail = operator.run(store, f"detail flaky-flush {ref}")
+        assert detail.startswith("[+] Finding 1") and "explored: Intent 1" in detail and "--- e1: terminal" in detail
 
 
 def test_messaging_platforms_get_a_code_block():

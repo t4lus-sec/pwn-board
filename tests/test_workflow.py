@@ -41,19 +41,20 @@ class Files:
         return read
 
 
-class Verifier:
-    """A fake ctx.llm.complete_structured: records what it was shown, answers as told."""
+class Lifecycle:
+    """A fake ctx.subagent_lifecycle: records launches; the test plays the child's start and stop."""
 
-    def __init__(self, verdict="passed", fail=False):
-        self.verdict, self.fail, self.inputs = verdict, fail, []
+    def __init__(self):
+        self.requests, self.cancelled, self.fail_with = [], [], None
 
-    def __call__(self, **kwargs):
-        self.inputs.append(kwargs["input"][0]["text"])
-        if self.fail:
-            raise TimeoutError("provider timed out")
-        return SimpleNamespace(parsed={"verdict": self.verdict, "report": "Checked the compose file and the test runs.",
-                                       "claims": [{"claim": "tmpfs raised to 1 GB", "status": "supported", "why": "docker-compose.yml line 3"}],
-                                       "missing": ["did not re-run the test"]}, text="")
+    def launch(self, request):
+        if self.fail_with:
+            raise self.fail_with
+        self.requests.append(request)
+        return SimpleNamespace(to_dict=lambda n=len(self.requests): {"subagent_id": f"sa-{n}"})
+
+    def cancel(self, handle, *, reason):
+        self.cancelled.append(handle)
 
 
 @pytest.fixture
@@ -64,10 +65,12 @@ def env(tmp_path):
     t = tools.Tools(lambda: store, lambda: (lambda c, to, kw: runs.pop(0)), reader=files,
                     session_key_of=lambda kwargs: "ses_main")
     injected = []
-    verifier = Verifier()
-    poller = flowrt.Poller(lambda: store, verifier, lambda text, key: injected.append((key, text)) or True, lambda b: None)
+    service = Lifecycle()
+    poller = flowrt.Poller(lambda: store, lambda text, key: injected.append((key, text)) or True, "proc-1")
+    verifiers = flowrt.Verifiers(lambda: store, lambda: service, "proc-1")
     tools.SUBAGENT_SESSIONS.discard("s-sub")
-    return SimpleNamespace(store=store, t=t, runs=runs, files=files, injected=injected, verifier=verifier, poller=poller)
+    return SimpleNamespace(store=store, t=t, runs=runs, files=files, injected=injected, service=service,
+                           poller=poller, verifiers=verifiers)
 
 
 def call(env, name, args, **kwargs):
@@ -94,11 +97,21 @@ def report(env, name="flaky-flush", files=("/work/docker-compose.yml",)):
 
 def run_poller(env):
     env.poller.tick()
-    import threading
-    for thread in threading.enumerate():
-        if thread.name.startswith("search-board-verifier"):
-            thread.join(5)
+
+
+def run_verifier(env, report="VERDICT: passed\n\nRan the goal test: fifty runs pass. The compose file sets 1 GB.",
+                 status="completed"):
+    """A main-agent turn launches the wanted verifier; the child starts, reports and stops."""
+    before = len(env.service.requests)
+    env.verifiers.in_turn()
+    assert len(env.service.requests) == before + 1, "no verifier was launched"
+    request = env.service.requests[-1]
+    child = f"child-{len(env.service.requests)}"
+    env.verifiers.on_child_start(child_session_id=child, child_goal=request["goal"])
+    assert child in tools.VERIFIER_SESSIONS
+    assert env.verifiers.on_child_stop(child_session_id=child, child_summary=report, child_status=status)
     env.poller.deliver(env.store)
+    return request
 
 
 # ---------------------------------------------------------------- write-up and review
@@ -142,7 +155,7 @@ def test_dot_dot_paths_are_refused(env):
 def test_sent_back_with_notes_every_note_needs_an_answer(env):
     solved_board(env)
     report(env)
-    assert "R1 added" in cmd.run(env.store, "comment flaky-flush Did you check it on arm64?")
+    assert "Review note 1 added" in cmd.run(env.store, "comment flaky-flush Did you check it on arm64?")
     cmd.run(env.store, "comment flaky-flush Why 1 GB and not 256 MB?")
     assert "round 2" in cmd.run(env.store, "back flaky-flush")
     board = env.store.board("flaky-flush")
@@ -172,7 +185,7 @@ def test_review_notes_only_in_review_and_unanswered_ones_can_be_taken_back(env):
     assert "not in review" in cmd.run(env.store, "comment flaky-flush too early")
     report(env)
     cmd.run(env.store, "comment flaky-flush first thought")
-    assert "taken back" in cmd.run(env.store, "uncomment flaky-flush R1")
+    assert "Review note 1 taken back" in cmd.run(env.store, "uncomment flaky-flush Review note 1")
     assert env.store.workflow("flaky-flush").notes == []
 
 
@@ -191,7 +204,8 @@ def test_the_verifiers_report_is_held_until_the_agent_files_its_own(env):
     solved_board(env)
     report(env)
     assert "in verification" in cmd.run(env.store, "verify flaky-flush")
-    run_poller(env)  # the verifier runs; the agent is woken to do its own check
+    run_poller(env)  # the agent is woken to do its own check
+    run_verifier(env)  # and its next turn launches the verifier, which reports
     assert any("Check it yourself now" in text for _, text in env.injected)
     assert not any("verifier's report" in text for _, text in env.injected)
 
@@ -202,8 +216,8 @@ def test_the_verifiers_report_is_held_until_the_agent_files_its_own(env):
 
     own = call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed",
                                             "findings": "Re-ran the goal test: fifty runs pass. Read the compose file: tmpfs is 1 GB."})
-    assert own["verifier"]["state"] == "done" and own["verifier"]["report"].startswith("VERDICT: passed")
-    assert "[supported] tmpfs raised to 1 GB" in own["verifier"]["report"]
+    assert own["verifier"]["state"] == "done" and own["verifier"]["verdict"] == "passed"
+    assert own["verifier"]["report"].startswith("VERDICT: passed") and "compose file sets 1 GB" in own["verifier"]["report"]
     assert not call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "y" * 50})["ok"]
 
     done = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
@@ -217,43 +231,105 @@ def test_the_verifiers_report_is_held_until_the_agent_files_its_own(env):
     assert any("accepted 'flaky-flush' as delivered" in text for text in env.store.take_notices())
 
 
-def test_the_verifier_sees_the_work_not_the_agents_word(env):
+def test_the_verifier_is_a_subagent_that_sees_the_work_not_the_agents_word(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
     call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "MY SECRET OWN CHECK " * 5})
-    run_poller(env)
-    shown = env.verifier.inputs[0]
+    request = run_verifier(env)
+    assert request["role"] == "leaf" and request["allowed_toolsets"] == ("terminal", "file")
+    assert "Run the goal test if it is a command" in request["goal"] and "pytest --count 50" in request["goal"]
+    shown = request["context"]
     assert REPORT in shown and "tmpfs: /tmp:size=1g" in shown
     assert "tmpfs 64M 64M 0 100% /tmp" in shown  # the tool output a finding cites
-    assert "recorded by the plugin's goal test run" in shown
-    assert "MY SECRET OWN CHECK" not in shown
+    assert "MY SECRET OWN CHECK" not in shown + request["goal"]
     # The agent filed first, so the report wakes it the moment it lands.
     assert any("independent verifier's report" in text and "VERDICT: passed" in text for _, text in env.injected)
+
+
+def test_a_verifier_only_reads_the_board(env):
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    env.verifiers.in_turn()
+    env.verifiers.on_child_start(child_session_id="child-v", child_goal=env.service.requests[-1]["goal"])
+    tools.note_subagent("child-v")
+    assert call(env, "search_board_review", {"name": "flaky-flush"}, session_id="child-v")["ok"]
+    refused = call(env, "search_board_leads", {"name": "flaky-flush", "leads": [{"direction": "something else to try", "rationale": "because of reasons"}]},
+                   session_id="child-v")
+    assert not refused["ok"] and "only reads the board" in refused["error"]
+
+
+def test_launching_outside_a_turn_waits_for_one(env):
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    env.service.fail_with = RuntimeError("No active Hermes parent session is available.")
+    env.verifiers.in_turn()
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "wanted" and flow.verifier_note is None  # not counted as a failure
+    env.service.fail_with = None
+    run_verifier(env)
+
+
+def test_toolsets_narrow_until_the_parent_allows_them(env):
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    seen = []
+
+    def launch(request):
+        seen.append(request.get("allowed_toolsets"))
+        if request.get("allowed_toolsets") == ("terminal", "file"):
+            raise ValueError("Requested toolsets would broaden parent permissions.")
+        return SimpleNamespace(to_dict=lambda: {"subagent_id": "sa-x"})
+
+    env.service.launch = launch
+    env.verifiers.in_turn()
+    assert seen == [("terminal", "file"), ("file",)]
+    assert env.store.workflow("flaky-flush").flow.verifier_state == "running"
+
+
+def test_a_verifier_that_cannot_launch_says_why_and_is_tried_again(env):
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    env.service.fail_with = RuntimeError("Delegation spawning is paused.")
+    env.verifiers.in_turn()
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "wanted" and "spawning is paused" in flow.verifier_note
+    assert env.store.verifiers_wanted() == []  # not again for a minute
+    assert len(env.store.verifiers_wanted(retry_seconds=-5)) == 1
 
 
 def test_a_failed_verifier_can_be_reconciled_or_run_again(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    env.poller._complete = Verifier(fail=True)
-    run_poller(env)
+    run_verifier(env, report="", status="failed")
     flow = env.store.workflow("flaky-flush").flow
-    assert flow.verifier_state == "failed" and "provider timed out" in flow.verifier_note
+    assert flow.verifier_state == "failed" and "ended failed" in flow.verifier_note
     assert "will run again" in cmd.run(env.store, "reverify flaky-flush")
-    env.poller._complete = Verifier(verdict="failed")
-    run_poller(env)
+    run_verifier(env, report="It does not hold up.\nVERDICT: failed")
     assert env.store.workflow("flaky-flush").flow.verifier_verdict == "failed"
 
 
-def test_sent_back_from_verification_drops_the_running_verifier(env):
+def test_verdicts_are_read_from_the_report():
+    assert flowrt.verdict_of("blah\nVERDICT: passed\nmore") == "passed"
+    assert flowrt.verdict_of("**Verdict:** FAILED") == "failed"
+    assert flowrt.verdict_of("no verdict here") == "unclear"
+
+
+def test_sent_back_from_verification_drops_and_cancels_the_running_verifier(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    [(board_id, token)] = env.store.verifiers_wanted()
-    assert env.store.verifier_start(board_id, token)
+    env.verifiers.in_turn()
+    env.verifiers.on_child_start(child_session_id="child-late", child_goal=env.service.requests[-1]["goal"])
     cmd.run(env.store, "back flaky-flush the arm64 run still fails")
-    assert env.store.verifier_finish(board_id, token, ok=True, verdict="passed", report="late") is None
+    assert not env.verifiers.on_child_stop(child_session_id="child-late", child_summary="VERDICT: passed", child_status="completed")
+    env.verifiers.in_turn()  # the next turn cancels it
+    assert env.service.cancelled == [{"subagent_id": "sa-1"}]
     snap = env.store.snapshot("flaky-flush")
     assert snap.board.status == "open" and "Sent back from verification: the arm64 run still fails" in snap.notes[-1].text
     assert env.store.workflow("flaky-flush").flow.round == 2
@@ -266,7 +342,7 @@ def test_back_to_review_and_verified_again_from_complete(env):
     assert "your review again" in cmd.run(env.store, "toreview flaky-flush")
     assert env.store.workflow("flaky-flush").flow.verifier_state is None
     cmd.run(env.store, "verify flaky-flush")
-    run_poller(env)
+    run_verifier(env)
     assert call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed",
                                              "findings": "Checked it all again: fifty runs pass, compose file is right."})["ok"]
     assert call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
@@ -379,17 +455,16 @@ def test_review_tool_shows_what_was_delivered(env):
     assert "size=1g" in one["content"]
 
 
-def test_stale_running_verifiers_are_wanted_again(env):
+def test_a_verifier_lost_with_its_process_is_wanted_again(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    [(board_id, token)] = env.store.verifiers_wanted()
-    env.store.verifier_start(board_id, token)
-    with env.store._db(write=True) as db:
-        db.execute("UPDATE flow SET verifier_started_at='2020-01-01T00:00:00+00:00'")
-    assert env.store.revive_stale_verifiers() == 1
-    [(_, new_token)] = env.store.verifiers_wanted()
-    assert new_token != token
+    env.verifiers.in_turn()
+    [(board_id, token, job)] = env.store.verifiers_running("proc-1")
+    assert env.store.revive_orphans("proc-1") == 0  # still ours, still young
+    assert env.store.revive_orphans("proc-2") == 1  # a new process: the child died with the old one
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "wanted" and flow.verifier_token != token and "lost" in flow.verifier_note
     assert env.store.verifier_finish(board_id, token, ok=True, verdict="passed", report="old") is None
 
 
@@ -415,12 +490,32 @@ def test_an_old_verifiers_report_never_lands_on_a_new_verification(env):
     solved_board(env)
     report(env)
     cmd.run(env.store, "verify flaky-flush")
-    [(board_id, old)] = env.store.verifiers_wanted()
-    env.store.verifier_start(board_id, old)
+    env.verifiers.in_turn()
+    env.verifiers.on_child_start(child_session_id="child-old", child_goal=env.service.requests[-1]["goal"])
     cmd.run(env.store, "toreview flaky-flush")
     cmd.run(env.store, "verify flaky-flush")
-    [(_, new)] = env.store.verifiers_wanted()
-    env.store.verifier_start(board_id, new)
-    assert env.store.verifier_finish(board_id, old, ok=True, verdict="passed", report="from the old one") is None
+    env.verifiers.in_turn()
+    env.verifiers.on_child_start(child_session_id="child-new", child_goal=env.service.requests[-1]["goal"])
+    assert not env.verifiers.on_child_stop(child_session_id="child-old", child_summary="VERDICT: passed", child_status="completed")
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "running" and flow.verifier_report is None
+    assert env.verifiers.on_child_stop(child_session_id="child-new", child_summary="VERDICT: failed", child_status="completed")
+    assert env.store.workflow("flaky-flush").flow.verifier_verdict == "failed"
+
+
+def test_a_report_under_an_old_token_is_dropped_by_the_store_itself(env):
+    """Second line of defence: even if an old child were matched, its token no longer counts."""
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    env.verifiers.in_turn()
+    old = env.store.workflow("flaky-flush").flow.verifier_token
+    cmd.run(env.store, "toreview flaky-flush")
+    cmd.run(env.store, "verify flaky-flush")
+    env.verifiers.in_turn()
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "running" and flow.verifier_token != old
+    board_id = env.store.board("flaky-flush").id
+    assert env.store.verifier_finish(board_id, old, ok=True, verdict="passed", report="VERDICT: passed") is None
     flow = env.store.workflow("flaky-flush").flow
     assert flow.verifier_state == "running" and flow.verifier_report is None

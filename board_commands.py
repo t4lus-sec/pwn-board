@@ -17,15 +17,15 @@ import shlex
 from typing import Optional
 
 from . import board_render as render
-from .board_store import Refused, Store
+from .board_store import Refused, Store, label, parse_ref
 
 HELP = """/sboard — search boards
   /sboard                      boards that are live or waiting for you
   /sboard all                  every board, closed ones too
-  /sboard show <name> [all]    the board as a tree (all: unfold ruled-out leads)
-  /sboard detail <name> <id>   one lead, finding or note in full (a finding with its evidence)
-  /sboard note <name> [L3:] <text>   leave a note (about L3/F2 if you start with it)
-  /sboard unnote <name> <N2>   take a note off
+  /sboard show <name> [all]    the board as a tree (all: unfold ruled-out intents)
+  /sboard detail <name> <ref>  one intent, finding or note in full: "Finding 3", "Intent 2" or F3, I2
+  /sboard note <name> [Intent 3:] <text>   leave a note (about an intent or finding if you start with it)
+  /sboard unnote <name> <Note 2>     take a note off
   /sboard extend <name> <steps>      give a suspended board more steps
   /sboard confirm <name>       accept a proposed_solved board
   /sboard exhaust <name>       accept a proposed_exhausted board
@@ -36,7 +36,7 @@ HELP = """/sboard — search boards
   /sboard review <name>        the write-up, the files as delivered, your review notes and the answers
   /sboard file <name> <path>   one delivered file, as it was delivered
   /sboard comment <name> <text>      leave a review note (the agent answers each before writing up again)
-  /sboard uncomment <name> <R2>      take back a review note the agent hasn't answered
+  /sboard uncomment <name> <Review note 2>  take back a review note the agent hasn't answered
   /sboard back <name> [why]    send it back to work: open again, a new round
   /sboard verify <name>        send it to verification: an independent verifier and the agent check it
   /sboard verification <name>  both checks and the reconciled report
@@ -89,7 +89,7 @@ def run(store: Store, raw_args: str) -> str:
             return render.tree(snap, fold_ruled_out=not (len(rest) > 1 and rest[1] == "all"))
         if verb == "detail" and len(rest) >= 2:
             snap = store.snapshot(rest[0])
-            key = rest[1].upper()
+            key = parse_ref(" ".join(rest[1:]))
             evidence = []
             for finding in snap.findings:
                 if finding.id == key:
@@ -97,12 +97,12 @@ def run(store: Store, raw_args: str) -> str:
             return render.detail(snap, key, evidence)
         if verb in ("note", "hint") and len(rest) >= 2:
             note, board = store.add_note(rest[0], " ".join(rest[1:]))
-            about = f" about {note.about}" if note.about else ""
-            return (f"{note.id} left on '{board.name}'{about}. It stays on the board; the agent sees it on "
+            about = f" about {label(note.about)}" if note.about else ""
+            return (f"{label(note.id)} left on '{board.name}'{about}. It stays on the board; the agent sees it on "
                     "every read, marked new on its next. The current exploration is not interrupted.")
-        if verb in ("unnote", "unhint") and len(rest) == 2:
-            board = store.remove_note(rest[0], rest[1])
-            return f"{rest[1].upper()} taken off '{board.name}'."
+        if verb in ("unnote", "unhint") and len(rest) >= 2:
+            board = store.remove_note(rest[0], " ".join(rest[1:]))
+            return f"{label(parse_ref(' '.join(rest[1:])))} taken off '{board.name}'."
         if verb == "extend" and len(rest) == 2:
             board = store.operator_extend(rest[0], rest[1])
             return f"'{board.name}' now at steps {board.steps_used}/{board.step_budget} [{board.status}]"
@@ -121,11 +121,12 @@ def run(store: Store, raw_args: str) -> str:
             return head + (f" — not kept: {meta.error}" if meta.error else "") + "\n" + content
         if verb == "comment" and len(rest) >= 2:
             note = store.comment(rest[0], " ".join(rest[1:]))
-            return (f"{note.id} added to '{rest[0]}' (round {note.round}). The agent sees your notes when you send "
+            return (f"{label(note.id)} added to '{rest[0]}' (round {note.round}). The agent sees your notes when you send "
                     "the board back, and must answer each before writing it up again.")
-        if verb == "uncomment" and len(rest) == 2:
-            store.uncomment(rest[0], rest[1])
-            return f"{rest[1].upper()} taken back."
+        if verb == "uncomment" and len(rest) >= 2:
+            ref = " ".join(rest[1:])
+            store.uncomment(rest[0], ref)
+            return f"{label(parse_ref(ref) if not ref.isdigit() else 'R' + ref)} taken back."
         if verb == "back" and rest:
             board, flow = store.send_back(rest[0], " ".join(rest[1:]))
             return f"'{board.name}' is back with the agent, {board.status} again (round {flow.round}). {WAKES}"

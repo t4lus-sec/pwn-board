@@ -70,6 +70,34 @@ BASES = ("observed", "inferred")
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
+# What the operator reads and types: "Intent 3", "Finding 2", "Note 1", "Review note 4". Stored ids
+# stay short (L3, F2, N1, R4), which is what the agent's tools use.
+KINDS = {"L": "Intent", "F": "Finding", "N": "Note", "R": "Review note"}
+_REF_WORDS = {"intent": "L", "lead": "L", "i": "L", "l": "L", "finding": "F", "fact": "F", "f": "F",
+              "note": "N", "hint": "N", "n": "N", "h": "N", "reviewnote": "R", "review": "R", "r": "R"}
+REF_RE = re.compile(r"^\s*\[?\s*(review\s*note|intent|lead|finding|fact|note|hint|review|[ilfnhr])\s*#?\s*(\d+)\s*\]?", re.I)
+
+
+def parse_ref(text: object) -> str:
+    """'Intent 3', 'intent3', 'I3', 'L3' → 'L3'; anything else comes back trimmed and upper-cased."""
+    raw = str(text or "")
+    match = REF_RE.match(raw)
+    if match and match.end() == len(raw.rstrip()):
+        return _REF_WORDS[re.sub(r"\s+", "", match.group(1).lower())] + match.group(2)
+    return raw.strip().upper()
+
+
+def label(ref: Optional[str]) -> str:
+    """'L3' → 'Intent 3'. Anything else unchanged."""
+    ref = str(ref or "")
+    if len(ref) > 1 and ref[0] in KINDS and ref[1:].isdigit():
+        return f"{KINDS[ref[0]]} {ref[1:]}"
+    return ref
+
+
+def labels(refs) -> str:
+    return ", ".join(label(ref) for ref in refs)
+
 
 class Refused(Exception):
     """A request the store won't carry out, with the reason to hand back."""
@@ -351,8 +379,11 @@ class Store:
                     verifier_state TEXT, verifier_token TEXT, verifier_verdict TEXT,
                     verifier_report TEXT, verifier_note TEXT, verifier_started_at TEXT,
                     verifier_told INTEGER NOT NULL DEFAULT 0,
+                    verifier_job TEXT, verifier_child TEXT, verifier_proc TEXT, verifier_tried_at TEXT,
                     own_verdict TEXT, own_report TEXT, verdict TEXT, verification TEXT,
                     verified_at TEXT, accepted_at TEXT, session_key TEXT);
+                -- Verifier subagents to cancel at the next chance (their board moved on).
+                CREATE TABLE IF NOT EXISTS cancels(job TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reports(
                     board_id TEXT NOT NULL REFERENCES boards(id), round INTEGER NOT NULL,
                     text TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (board_id, round));
@@ -366,6 +397,11 @@ class Store:
                     truncated INTEGER NOT NULL, error TEXT, PRIMARY KEY (board_id, round, path));
                 """
             )
+            # Columns added since a database was made: added, never dropped.
+            have = {row[1] for row in db.execute("PRAGMA table_info(flow)")}
+            for column in ("verifier_job", "verifier_child", "verifier_proc", "verifier_tried_at"):
+                if column not in have:
+                    db.execute(f"ALTER TABLE flow ADD COLUMN {column} TEXT")
             found = db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
             if found is not None and found[0] != SCHEMA:
                 raise RuntimeError(f"board database {where} has schema {found[0]!r}, expected {SCHEMA!r}")
@@ -867,13 +903,14 @@ class Store:
     def add_note(self, name: str, text: str) -> tuple[Note, Board]:
         text = bounded(text, 1, MAX_NOTE, "note")
         about = None
-        match = re.match(r"^\s*\[?([LF]\d+)\]?[:\s]\s*(.+)$", text, re.S | re.I)
+        # "Intent 3: …", "F2 …", "[L3] …": a note about that intent or finding.
+        match = re.match(r"^\s*\[?\s*((?:intent|lead|finding|fact|[ilf])\s*#?\s*\d+)\s*\]?\s*[:\s]\s*(.+)$", text, re.S | re.I)
         with self._db(write=True) as db:
             board = self._must_board(db, name)
             if board.status in ("solved", "exhausted", "abandoned"):
                 raise Refused(f"'{board.name}' is closed ({board.status})")
             if match:
-                candidate = match.group(1).upper()
+                candidate = parse_ref(match.group(1))
                 table = "leads" if candidate.startswith("L") else "findings"
                 if db.execute(f"SELECT 1 FROM {table} WHERE board_id=? AND id=?", (board.id, candidate)).fetchone():
                     about = candidate
@@ -888,15 +925,14 @@ class Store:
 
     def remove_note(self, name: str, note_id: str) -> Board:
         note_id = str(note_id or "").strip().upper()
-        if note_id.isdigit():
-            note_id = f"N{note_id}"
+        note_id = f"N{note_id}" if note_id.isdigit() else parse_ref(note_id)
         with self._db(write=True) as db:
             board = self._must_board(db, name)
             cursor = db.execute(
                 "UPDATE notes SET removed_at=? WHERE board_id=? AND id=? AND removed_at IS NULL",
                 (stamp(), board.id, note_id))
             if cursor.rowcount == 0:
-                raise Refused(f"'{board.name}' has no note {note_id}")
+                raise Refused(f"'{board.name}' has no {label(note_id)}")
             return board
 
     def extend(self, name: str, steps: int) -> Board:
@@ -993,6 +1029,15 @@ class Store:
     def _push(self, db: sqlite3.Connection, text: str, *, wake: bool, board: Optional["Board"] = None) -> None:
         db.execute("INSERT INTO notices(created_at, text, wake, board_id) VALUES(?,?,?,?)",
                    (stamp(), text, 1 if wake else 0, board.id if board else None))
+
+    @staticmethod
+    def _drop_verifier(db: sqlite3.Connection, flow: "Flow") -> None:
+        """The board moved on: a running verifier's report is no one's now, and the subagent is
+        cancelled at the next chance (only an agent turn can reach it)."""
+        if flow.verifier_state == "running" and flow.verifier_job:
+            db.execute("INSERT INTO cancels VALUES(?,?)", (flow.verifier_job, stamp()))
+        flow.verifier_state = flow.verifier_token = flow.verifier_job = flow.verifier_child = None
+        flow.verifier_proc = flow.verifier_tried_at = None
 
     @staticmethod
     def _reopen(db: sqlite3.Connection, board: "Board") -> None:
@@ -1155,12 +1200,13 @@ class Store:
 
     def uncomment(self, name: str, note_id: str) -> "Board":
         note_id = str(note_id or "").strip().upper()
+        note_id = f"R{note_id}" if note_id.isdigit() else parse_ref(note_id)
         with self._db(write=True) as db:
             board = self._must_board(db, name)
             cursor = db.execute("UPDATE review_notes SET removed_at=? WHERE board_id=? AND id=? AND answer IS NULL "
                                 "AND removed_at IS NULL", (stamp(), board.id, note_id))
             if cursor.rowcount == 0:
-                raise Refused(f"'{board.name}' has no unanswered review note {note_id}")
+                raise Refused(f"'{board.name}' has no unanswered {label(note_id).lower()}")
             return board
 
     def send_back(self, name: str, why: str = "") -> tuple["Board", "Flow"]:
@@ -1180,7 +1226,7 @@ class Store:
                            (f"N{seq}", board.id, seq, f"Sent back from {where}: {why}", None, stamp(), None, None))
             flow.round += 1
             flow.stage, flow.entered_at = "working", stamp()
-            flow.verifier_state = flow.verifier_token = None  # a running verifier's report is no one's now
+            self._drop_verifier(db, flow)
             flow.accepted_at = None
             self._put_flow(db, flow)
             if source == "review":
@@ -1215,6 +1261,7 @@ class Store:
             again = flow.stage == "deliverable"
             unanswered = sum(1 for n in self._review_notes(db, board) if n.answer is None)
             flow.stage, flow.entered_at, flow.accepted_at = "verification", stamp(), None
+            self._drop_verifier(db, flow)
             flow.verifier_state, flow.verifier_token = "wanted", secrets.token_hex(8)
             flow.verifier_verdict = flow.verifier_report = flow.verifier_note = flow.verifier_started_at = None
             flow.verifier_told = 0
@@ -1240,7 +1287,7 @@ class Store:
             if source not in ("verification", "deliverable"):
                 raise Refused(f"'{board.name}' is {flow.stage}, not in verification or complete")
             flow.stage, flow.entered_at, flow.accepted_at = "review", stamp(), None
-            flow.verifier_state = flow.verifier_token = None
+            self._drop_verifier(db, flow)
             self._put_flow(db, flow)
             if board.status == "exhausted":
                 db.execute("UPDATE boards SET status='proposed_exhausted' WHERE id=?", (board.id,))
@@ -1276,7 +1323,7 @@ class Store:
             if flow.stage == "discarded":
                 raise Refused(f"'{board.name}' is discarded already")
             flow.stage, flow.entered_at = "discarded", stamp()
-            flow.verifier_state = flow.verifier_token = None
+            self._drop_verifier(db, flow)
             self._put_flow(db, flow)
             note = "[discarded by the operator]" + (f" {why}" if why else "")
             db.execute("UPDATE boards SET status='abandoned', closed_at=COALESCE(closed_at, ?), outcome=? WHERE id=?",
@@ -1293,6 +1340,7 @@ class Store:
                 raise Refused(f"'{board.name}' has no failed verifier to run again")
             if flow.verification is not None:
                 raise Refused(f"'{board.name}' is reconciled already; send it to verification again instead")
+            self._drop_verifier(db, flow)
             flow.verifier_state, flow.verifier_token = "wanted", secrets.token_hex(8)
             flow.verifier_report = flow.verifier_note = flow.verifier_verdict = None
             flow.verifier_told = 0
@@ -1304,7 +1352,7 @@ class Store:
         flow = self._flow(db, board)
         at = stamp()
         flow.stage, flow.entered_at, flow.accepted_at = "deliverable", at, at
-        flow.verifier_state = flow.verifier_token = None
+        self._drop_verifier(db, flow)
         self._put_flow(db, flow)
         db.execute("UPDATE boards SET closed_at=COALESCE(closed_at, ?) WHERE id=?", (at, board.id))
 
@@ -1339,30 +1387,76 @@ class Store:
 
     # -- the verifier's side (run by the plugin, never by the agent)
 
-    def verifiers_wanted(self) -> list:
+    def verifiers_wanted(self, retry_seconds: int = 60) -> list:
+        """(board_id, token) of verifiers to launch now: wanted, and not tried in the last minute."""
+        cutoff = stamp(now_utc() - timedelta(seconds=retry_seconds))
         with self._db() as db:
             return [(r["board_id"], r["verifier_token"]) for r in db.execute(
-                "SELECT board_id, verifier_token FROM flow WHERE stage='verification' AND verifier_state='wanted'")]
+                "SELECT board_id, verifier_token FROM flow WHERE stage='verification' AND verifier_state='wanted' "
+                "AND (verifier_tried_at IS NULL OR verifier_tried_at < ?)", (cutoff,))]
 
-    def revive_stale_verifiers(self, minutes: int = 15) -> int:
-        """A verifier left running by a process that went away is wanted again (a new token drops
-        the old one's report, should it ever come)."""
-        cutoff = stamp(now_utc() - timedelta(minutes=minutes))
+    def verifier_not_launched(self, board_id: str, token: str, why: str) -> None:
         with self._db(write=True) as db:
-            stale = db.execute("SELECT board_id FROM flow WHERE verifier_state='running' AND "
-                               "(verifier_started_at IS NULL OR verifier_started_at < ?)", (cutoff,)).fetchall()
-            for row in stale:
-                db.execute("UPDATE flow SET verifier_state='wanted', verifier_token=? WHERE board_id=?",
-                           (secrets.token_hex(8), row["board_id"]))
-            return len(stale)
+            db.execute("UPDATE flow SET verifier_note=?, verifier_tried_at=? WHERE board_id=? AND verifier_token=? "
+                       "AND verifier_state='wanted'", (f"not started yet: {why}"[:500], stamp(), board_id, token))
 
-    def verifier_start(self, board_id: str, token: str) -> bool:
+    def verifier_launched(self, board_id: str, token: str, job: str, proc: str) -> bool:
+        """The subagent is running. False if the board moved on meanwhile: then cancel it."""
         with self._db(write=True) as db:
             cursor = db.execute(
-                "UPDATE flow SET verifier_state='running', verifier_started_at=? WHERE board_id=? "
-                "AND verifier_token=? AND verifier_state='wanted' AND stage='verification'",
-                (stamp(), board_id, token))
+                "UPDATE flow SET verifier_state='running', verifier_job=?, verifier_proc=?, verifier_started_at=?, "
+                "verifier_tried_at=?, verifier_note=NULL WHERE board_id=? AND verifier_token=? "
+                "AND verifier_state='wanted' AND stage='verification'",
+                (job, proc, stamp(), stamp(), board_id, token))
             return cursor.rowcount == 1
+
+    def verifier_child(self, token: str, child_session_id: str) -> Optional[str]:
+        """The subagent the verifier for ``token`` runs as; returns its board's id."""
+        with self._db(write=True) as db:
+            row = db.execute("SELECT board_id FROM flow WHERE verifier_token=?", (token,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE flow SET verifier_child=? WHERE board_id=?", (child_session_id, row["board_id"]))
+            return row["board_id"]
+
+    def verifier_of_child(self, child_session_id: str) -> Optional[tuple]:
+        with self._db() as db:
+            row = db.execute("SELECT board_id, verifier_token FROM flow WHERE verifier_child=? "
+                             "AND verifier_state='running'", (child_session_id,)).fetchone()
+            return (row["board_id"], row["verifier_token"]) if row else None
+
+    def verifiers_running(self, proc: str) -> list:
+        """(board_id, token, job) of verifiers this process launched and has not heard back from."""
+        with self._db() as db:
+            return [(r["board_id"], r["verifier_token"], r["verifier_job"]) for r in db.execute(
+                "SELECT board_id, verifier_token, verifier_job FROM flow WHERE verifier_state='running' "
+                "AND verifier_proc=?", (proc,))]
+
+    def revive_orphans(self, proc: str, minutes: int = 120) -> int:
+        """A verifier launched by a process that is gone (children don't survive a restart), or
+        running far too long, is wanted again; a new token drops the old one's report."""
+        cutoff = stamp(now_utc() - timedelta(minutes=minutes))
+        with self._db(write=True) as db:
+            stale = db.execute("SELECT * FROM flow WHERE verifier_state='running' AND "
+                               "(verifier_proc IS NULL OR verifier_proc<>? OR verifier_started_at < ?)",
+                               (proc, cutoff)).fetchall()
+            for row in stale:
+                if row["verifier_proc"] == proc and row["verifier_job"]:
+                    db.execute("INSERT INTO cancels VALUES(?,?)", (row["verifier_job"], stamp()))
+                db.execute("UPDATE flow SET verifier_state='wanted', verifier_token=?, verifier_job=NULL, "
+                           "verifier_child=NULL, verifier_proc=NULL, verifier_tried_at=NULL, verifier_note=? "
+                           "WHERE board_id=?", (secrets.token_hex(8), "started again: the last one was lost",
+                                                row["board_id"]))
+            return len(stale)
+
+    def take_cancels(self) -> list:
+        with self._db() as db:
+            if db.execute("SELECT 1 FROM cancels LIMIT 1").fetchone() is None:
+                return []  # the usual case, read-only: this runs on every tool result
+        with self._db(write=True) as db:
+            jobs = [r["job"] for r in db.execute("SELECT job FROM cancels")]
+            db.execute("DELETE FROM cancels")
+            return jobs
 
     def verifier_material(self, board_id: str) -> dict:
         """All the verifier sees: the board, the write-up, the files as delivered, the review, and every
@@ -1395,6 +1489,7 @@ class Store:
             if flow.verifier_token != token or flow.verifier_state != "running":
                 return None  # the board moved on: the report is no one's
             flow.verifier_state = "done" if ok else "failed"
+            flow.verifier_job = flow.verifier_child = None
             flow.verifier_verdict = verdict if ok else None
             flow.verifier_report = (report or "")[:MAX_VERIFY]
             flow.verifier_note = note
@@ -1465,6 +1560,10 @@ class Flow:
     verifier_note: Optional[str] = None
     verifier_started_at: Optional[str] = None
     verifier_told: int = 0
+    verifier_job: Optional[str] = None     # the lifecycle handle, as JSON
+    verifier_child: Optional[str] = None   # the subagent's session id
+    verifier_proc: Optional[str] = None    # the process that launched it
+    verifier_tried_at: Optional[str] = None
     own_verdict: Optional[str] = None
     own_report: Optional[str] = None
     verdict: Optional[str] = None
