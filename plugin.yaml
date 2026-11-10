@@ -1,0 +1,34 @@
+name: search-board
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  Search boards for problems with a known start, a testable goal and no known path. The agent
+  keeps a frontier of leads, records findings that must cite real tool results, and never scores
+  itself: the goal test is run through Hermes's terminal tool and the plugin writes the verdict.
+  A finished board goes through the operator's review (notes, rounds) and an independent
+  verification before it counts as delivered. /sboard and a Desktop pane drive all of it.
+author: t4lus
+license: MIT
+homepage: https://github.com/t4lus/search-board
+tags: [debugging, search, investigation, agents, desktop]
+requires_hermes: ">=0.23.0"
+provides_tools:
+  - search_board_list
+  - search_board_open
+  - search_board_read
+  - search_board_leads
+  - search_board_claim
+  - search_board_finding
+  - search_board_rule_out
+  - search_board_test
+  - search_board_close
+  - search_board_report
+  - search_board_answer
+  - search_board_review
+  - search_board_verify
+  - search_board_verification
+provides_hooks:
+  - transform_tool_result
+  - pre_llm_call
+  - subagent_start
