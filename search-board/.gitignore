@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/desktop/node_modules/
+tests/desktop/package-lock.json
+tests/desktop/.plugin.under-test.js
+tests/desktop/fixture.json

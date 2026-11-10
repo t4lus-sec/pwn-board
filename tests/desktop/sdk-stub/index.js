@@ -15,3 +15,7 @@ export function __setRenderers({ chat: c = chat, streamdown: s = stream } = {}) 
   MessageTextContent = c
   Streamdown = s
 }
+
+// The app's clipboard path, recorded.
+export const copied = []
+export async function writeClipboardText(text) { copied.push(text) }

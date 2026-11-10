@@ -123,3 +123,21 @@ def test_workflow_routes(api):
     assert client.post(f"{base}/back", json={"why": ""}).json()["round"] == 2
     assert client.post(f"{base}/discard", json={"why": "enough"}).json()["ok"]
     assert store.board("flaky-flush").status == "abandoned"
+
+
+def test_build_says_what_each_side_runs(api):
+    import re
+
+    client, store, m = api
+    version = re.search(r"^version:\s*(\S+)", (ROOT / "plugin.yaml").read_text(), re.M).group(1)
+    assert client.get("/api/plugins/search-board/build").json() == {"api": version, "agent": None}
+    store.record_build("agent", "0.1.0")
+    assert client.get("/api/plugins/search-board/build").json() == {"api": version, "agent": "0.1.0"}
+
+
+def test_the_pane_and_the_manifest_are_the_same_build():
+    import re
+
+    version = re.search(r"^version:\s*(\S+)", (ROOT / "plugin.yaml").read_text(), re.M).group(1)
+    pane = re.search(r"^export const BUILD = '([^']+)'", (ROOT / "desktop" / "plugin.js").read_text(), re.M).group(1)
+    assert pane == version, "bump desktop/plugin.js BUILD with plugin.yaml's version"

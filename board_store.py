@@ -34,6 +34,7 @@ from typing import Callable, Iterator, Optional
 SCHEMA = "search-board.v1"
 
 CLAIM_TTL = timedelta(minutes=30)
+VERIFIER_STATES = (None, "wanted", "running", "done", "failed")
 DEFAULT_STEP_BUDGET = 60
 MAX_STEP_BUDGET = 1_000
 MAX_FRONTIER = 40
@@ -1008,7 +1009,14 @@ class Store:
         row = db.execute("SELECT * FROM flow WHERE board_id=?", (board.id,)).fetchone()
         if row is None:
             return Flow(board_id=board.id, stage="working", round=1, entered_at=stamp())
-        return Flow(**{key: row[key] for key in row.keys()})
+        flow = Flow(**{key: row[key] for key in row.keys()})
+        if flow.verifier_state not in VERIFIER_STATES:
+            # Left by an older build (its own verifier states): a verifier that didn't finish, so one
+            # that can be run again and doesn't block reconciliation.
+            flow.verifier_state = "failed"
+            if flow.verifier_report and not flow.verifier_note:
+                flow.verifier_note = "stopped under an older search-board build"
+        return flow
 
     @staticmethod
     def _put_flow(db: sqlite3.Connection, flow: "Flow") -> None:
@@ -1331,6 +1339,16 @@ class Store:
             self._push(db, f"- the operator discarded '{board.name}'{': ' + why if why else ''}. It is closed "
                            "(abandoned); leave it be.", wake=False, board=board)
             return self._board(db.execute("SELECT * FROM boards WHERE id=?", (board.id,)).fetchone()), flow
+
+    def record_build(self, side: str, version: str) -> None:
+        """Which search-board build a process runs ('agent': the gateway's tools and hooks)."""
+        with self._db(write=True) as db:
+            db.execute("INSERT OR REPLACE INTO meta VALUES(?, ?)", (f"build.{side}", str(version)))
+
+    def build(self, side: str) -> Optional[str]:
+        with self._db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key=?", (f"build.{side}",)).fetchone()
+            return row["value"] if row else None
 
     def retry_verifier(self, name: str) -> "Flow":
         with self._db(write=True) as db:

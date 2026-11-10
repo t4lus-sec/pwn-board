@@ -69,6 +69,32 @@ def _board_json(board, counts=None) -> dict:
     return out
 
 
+def _build_version() -> str:
+    import re
+
+    try:
+        text = (Path(__file__).resolve().parents[1] / "plugin.yaml").read_text(encoding="utf-8")
+        found = re.search(r"^version:\s*['\"]?([^'\"\s]+)", text, re.M)
+        return found.group(1) if found else "unknown"
+    except OSError:
+        return "unknown"
+
+
+# Read at import: what this backend process actually loaded, not what is on disk now.
+BUILD = _build_version()
+
+
+@router.get("/build")
+def build():
+    """Which search-board build this backend runs, and which one the agent side last said it runs.
+    The pane compares both with its own, to tell when Hermes still has an older build loaded."""
+    try:
+        agent = _db().build("agent")
+    except Exception:
+        agent = None
+    return {"api": BUILD, "agent": agent}
+
+
 @router.get("/boards")
 def list_boards(all: bool = False) -> dict:
     store = _db()

@@ -122,7 +122,7 @@ verifier you sent a board to starts then.
 ```
 /sboard                      boards that are live or waiting for you
 /sboard show <name> [all]    the board as a tree
-/sboard detail <name> <ref>  one intent, finding or note in full, e.g. "Finding 2" (with its evidence)
+/sboard detail <name> <ref>  the origin, or one intent, finding or note in full, e.g. "Finding 2" (with its evidence)
 /sboard note <name> [Intent 3:] <text>   leave a note, optionally about an intent or finding
 /sboard unnote <name> <Note 2>      take a note off
 /sboard confirm|exhaust <name>      accept a proposal
@@ -143,39 +143,43 @@ verifier you sent a board to starts then.
 /sboard discard <name> [why] throw it away, wherever it is
 ```
 
-The board reads as the tree it was searched as: goal → leads → what each found → the leads
-that opened.
+The board reads as the tree it was searched as: the origin → intents → what each found → the
+intents that opened.
 
 ```
 [*] flaky-flush — Find why test_flush fails one run in fifty
 │  open · steps 3/60 · frontier 1 · 3 findings · opened 12 min ago
 │  goal: 50 green runs
 │  test (command): pytest tests/test_flush.py --count 50
-├─ [?] Intent 2 · p5 — Check fsync ordering in the writer thread
-├─ [+] Intent 1 · p8 · explored — Reproduce locally with --count 50
-│  └─ [+] Finding 1 · supports — Fails 3/50 locally, always ENOSPC from flush() (e1)
-│     └─ [*] Intent 4 · p7 · exploring (the main agent, 2 min ago) — Measure /tmp inside the container
-│        └─ [!] Note 1 · new — the container mounts /tmp as a 64 MB tmpfs
-├─ [+] Intent 3 · p5 · explored — Check CI runner disk space
-│  └─ [-] Finding 2 · rules out — Runner disk has 37 GB free (e2)
-└─ [-] Finding 3 · goal test · failed — Goal test failed (exit 1): `pytest tests/test_flush.py --count 50`. (e3)
+└─ [o] Origin — test_flush fails about 1 run in 20 on CI, with ENOSPC in the log tail
+   ├─ [?] Intent 2 · p5 — Check fsync ordering in the writer thread
+   ├─ [+] Intent 1 · p8 · explored — Reproduce locally with --count 50
+   │  └─ [+] Finding 1 · supports — Fails 3/50 locally, always ENOSPC from flush() (e1)
+   │     └─ [*] Intent 4 · p7 · exploring (the main agent, 2 min ago) — Measure /tmp inside the container
+   │        └─ [!] Note 1 · new — the container mounts /tmp as a 64 MB tmpfs
+   ├─ [+] Intent 3 · p5 · explored — Check CI runner disk space
+   │  └─ [-] Finding 2 · rules out — Runner disk has 37 GB free (e2)
+   └─ [-] Finding 3 · goal test · failed — Goal test failed (exit 1): `pytest tests/test_flush.py --count 50`. (e3)
 ```
 
 The markers mean:
 
+- `[o]` the origin: where the search started, the root every seed intent grows from;
 - `[+]` done, or supports;
 - `[*]` under way;
 - `[-]` ruled out or failed;
 - `[?]` open;
 - `[!]` wants you (a proposal, a suspended board, or a note the agent hasn't read).
 
-**The Desktop pane** ("search boards") shows the same tree live, with folding, color-coded by
-kind (blue intents, green and red findings, yellow notes) and a stepper across the top:
+**The Desktop pane** ("search boards") shows the same tree live, rooted at the origin, with folding, color-coded by
+kind (cyan origin, blue intents, green and red findings, yellow notes) and a stepper across the top:
 Search → Write-up → Review → Verify → Complete. Its four tabs, Board, Review, Verification and
 Complete, are there from the start; a tab that waits on you gets a dot. Write-ups, both checks, the
 reconciled report, review notes and answers, and finding and note text render as Markdown, with
 the chat's own renderer, in preview mode, so nothing in them loads an image or runs anything. A
-delivered `.md` file renders too, with a "Show source" switch.
+delivered `.md` file renders too, with a "Show source" switch. All text in the pane can be selected and copied, and
+the cards, the detail strip, cited tool output and delivered files each have a Copy button for
+the text as written (Markdown source included).
 
 ![The pane: Board, Review and Verification tabs](docs/pane-dark.png)
  The workflow tabs show the write-up, the files as delivered, your notes with the agent's answers,
@@ -195,6 +199,12 @@ hermes plugins install t4lus/search-board --enable        # straight from GitHub
 
 Then, in Desktop: **Capabilities → Plugins → search-board**, and enable the desktop half to get
 the pane.
+
+**Updating.** Hermes keeps the plugin's Python loaded until it restarts, and Desktop keeps the
+pane it loaded. After an update, run `hermes gateway restart` (or quit and reopen Hermes), then
+switch the desktop half off and on. The pane checks which build each side runs and shows a
+"Restart needed" banner, saying what to restart, while any side is behind. A verifier
+that an older build left unfinished shows as failed, with "Run the verifier again".
 
 ## Disclosures
 
@@ -236,6 +246,9 @@ the pane.
   (`/api/plugins/search-board/…`). Those routes read boards, evidence and the workflow, and
   accept only your actions: notes, extend, confirm, exhaust, reject, abandon, and the workflow's
   moves. Nothing there writes a lead, a finding, a write-up or a check.
+- **Build stamp.** The plugin records its version (`build.agent`) in its own database on first
+  use, and at load only if that database already exists, so loading it creates no files. The
+  pane's `/build` route reads it, to tell you when Hermes still runs an older build.
 
 ## Development
 

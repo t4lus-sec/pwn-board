@@ -519,3 +519,35 @@ def test_a_report_under_an_old_token_is_dropped_by_the_store_itself(env):
     assert env.store.verifier_finish(board_id, old, ok=True, verdict="passed", report="VERDICT: passed") is None
     flow = env.store.workflow("flaky-flush").flow
     assert flow.verifier_state == "running" and flow.verifier_report is None
+
+
+def test_a_verifier_left_by_an_older_build_can_be_run_again(env):
+    """0.1.0's verifier wrote states of its own ('stopped', with the error as its report). After an
+    upgrade such a board must not be stuck: the verifier counts as failed, runs again, and the agent
+    can reconcile."""
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    board_id = env.store.board("flaky-flush").id
+    error = "UnscopedSecretError: Hermes could not read this profile's GOOGLE_API_KEY"
+    with env.store._db(write=True) as db:
+        db.execute("UPDATE flow SET verifier_state='stopped', verifier_report=?, verifier_note=NULL WHERE board_id=?",
+                   (error, board_id))
+    flow = env.store.workflow("flaky-flush").flow
+    assert flow.verifier_state == "failed" and "older search-board build" in flow.verifier_note
+    cmd.run(env.store, "reverify flaky-flush")
+    assert env.store.workflow("flaky-flush").flow.verifier_state == "wanted"
+    run_verifier(env)
+    assert env.store.workflow("flaky-flush").flow.verifier_verdict == "passed"
+
+
+def test_a_legacy_failed_verifier_does_not_block_reconciliation(env):
+    solved_board(env)
+    report(env)
+    cmd.run(env.store, "verify flaky-flush")
+    with env.store._db(write=True) as db:
+        db.execute("UPDATE flow SET verifier_state='error' WHERE board_id=?", (env.store.board("flaky-flush").id,))
+    assert call(env, "search_board_verify", {"name": "flaky-flush", "verdict": "passed", "findings": "Re-ran the goal test: fifty pass. " * 2})["ok"]
+    done = call(env, "search_board_verification", {"name": "flaky-flush", "verdict": "passed",
+                                                   "report": "The verifier did not finish; my own check passed. " * 2})
+    assert done["ok"], done

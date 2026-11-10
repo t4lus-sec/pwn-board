@@ -3,8 +3,8 @@
  *
  * Four tabs, always there: Board, Review, Verification, Complete.
  *
- * - Board: the search drawn as the tree it was searched as — goal → intents → what each
- *   found → the intents that opened. Click a row for its full text below (a finding with
+ * - Board: the search drawn as the tree it was searched as — the origin → intents → what
+ *   each found → the intents that opened. Click a row for its full text below (a finding with
  *   the tool output it cites); fold a row with its caret. Leave notes for the agent, confirm
  *   or send back a proposal, extend a suspended board, abandon one.
  * - Review: the write-up and the files as delivered, your review notes with the agent's
@@ -14,6 +14,9 @@
  * - Complete: the delivered work, once you've accepted it.
  *
  * Every move that can't be undone in one click wants a second click.
+ *
+ * All text in the pane can be selected and copied (the app makes its chrome unselectable; the pane
+ * opts back in). Cards and the detail strip also have a Copy button for their text as written.
  *
  * Styling is inline, with the app's theme variables only: a disk plugin is loaded
  * uncompiled, so no utility class it uses can be counted on to exist. It reskins with
@@ -33,6 +36,8 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const { PANES_AREA } = sdk
 const EVENT = 'plugin.search-board.board.changed'
+/** This pane's build; plugin.yaml's version (a test keeps them equal). */
+export const BUILD = '0.2.0'
 
 // ------------------------------------------------------------------ look
 
@@ -49,6 +54,7 @@ const C = {
   test: 'var(--ui-purple)',
   note: 'var(--ui-yellow)',
   review: 'var(--ui-orange)',
+  origin: 'var(--ui-cyan, var(--ui-text-secondary))',
   card: 'var(--ui-bg-card)'
 }
 const tint = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`
@@ -69,12 +75,12 @@ export const label = id => (id && KINDS[id[0]] && /^\d+$/.test(id.slice(1)) ? `$
 const labels = ids => ids.map(label).join(', ')
 
 const S = {
-  pane: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 13, color: C.text },
+  pane: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 13, color: C.text, userSelect: 'text', WebkitUserSelect: 'text', cursor: 'auto' },
   scroll: { flex: 1, minHeight: 0, overflow: 'auto' },
   muted: { color: C.text3 },
   pad: { padding: '10px 12px' },
   card: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: '10px 12px', margin: '8px 10px' },
-  h: { fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.text3, marginBottom: 6 },
+  h: { fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.text3, marginBottom: 6, userSelect: 'none' },
   pre: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: MONO, fontSize: 11.5, lineHeight: 1.5, color: C.text2, margin: 0 },
   prose: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, color: C.text },
   input: { flex: 1, minWidth: 0, background: 'transparent', color: C.text, border: `1px solid ${C.line}`, borderRadius: 7, padding: '5px 9px', fontSize: 12.5, outline: 'none' },
@@ -129,11 +135,50 @@ export function plainText(text) {
     .trim()
 }
 
+// ------------------------------------------------------------------ selecting and copying
+
+/** A click that ends a drag-to-select is the reader selecting text, not picking a row. */
+function selectingText() {
+  const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null
+  return !!sel && !sel.isCollapsed && sel.toString().trim() !== ''
+}
+
+async function copyText(text) {
+  if (typeof sdk.writeClipboardText === 'function') return sdk.writeClipboardText(text)
+  return navigator.clipboard.writeText(text)
+}
+
+/** "Copy" → "Copied": the raw text (Markdown source as written), not the rendering. */
+export function CopyBtn({ text, what = 'text' }) {
+  const [state, setState] = useState('idle')
+  useEffect(() => {
+    if (state === 'idle') return undefined
+    const timer = setTimeout(() => setState('idle'), 1500)
+    return () => clearTimeout(timer)
+  }, [state])
+  if (!text) return null
+  return jsx('button', {
+    type: 'button',
+    title: `Copy the ${what}`,
+    'data-copy': what,
+    onClick: event => {
+      event.stopPropagation()
+      copyText(String(text)).then(() => setState('copied'), () => setState('failed'))
+    },
+    style: {
+      fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 6, cursor: 'pointer', userSelect: 'none',
+      color: state === 'failed' ? C.rulesOut : state === 'copied' ? C.supports : C.text3,
+      background: 'transparent', border: `1px solid ${C.line}`
+    },
+    children: state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy'
+  })
+}
+
 function pill(text, color, { strong = false, key } = {}) {
   return jsx('span', {
     style: {
       display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
-      padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, lineHeight: '18px',
+      padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600, lineHeight: '18px', userSelect: 'none',
       color, background: tint(color, strong ? 22 : 13), border: `1px solid ${tint(color, 35)}`
     },
     children: text
@@ -190,19 +235,20 @@ export function buildTree(snap) {
   const leads = Object.fromEntries(snap.leads.map(l => [l.id, l]))
   const findings = Object.fromEntries(snap.findings.map(f => [f.id, f]))
   const notes = Object.fromEntries(snap.notes.map(n => [n.id, n]))
-  const children = { board: [] }
+  // The origin is the root entry: where the search starts. Seed intents, goal tests and board notes hang off it.
+  const children = { board: ['origin'], origin: [] }
   const also = {}
   for (const id of [...Object.keys(leads), ...Object.keys(findings), ...Object.keys(notes)]) children[id] = []
 
   for (const lead of [...snap.leads].sort(byRank)) {
     const parents = lead.from_findings.filter(f => findings[f])
-    children[parents[0] ?? 'board'].push(lead.id)
+    children[parents[0] ?? 'origin'].push(lead.id)
     if (parents.length > 1) also[lead.id] = parents.slice(1)
   }
-  for (const f of snap.findings) children[leads[f.from_lead] ? f.from_lead : 'board'].push(f.id)
-  for (const n of snap.notes) children[n.about && children[n.about] ? n.about : 'board'].push(n.id)
+  for (const f of snap.findings) children[leads[f.from_lead] ? f.from_lead : 'origin'].push(f.id)
+  for (const n of snap.notes) children[n.about && children[n.about] && n.about !== 'origin' ? n.about : 'origin'].push(n.id)
 
-  return { leads, findings, notes, children, also }
+  return { board: snap.board, leads, findings, notes, children, also }
 }
 
 export function visibleRows(tree, folded) {
@@ -225,6 +271,10 @@ function isFolded(tree, folded, id) {
 
 /** What a row shows: its colour, its badge, its state chips, its text. */
 function look(tree, id) {
+  if (id === 'origin') {
+    const b = tree.board ?? {}
+    return { color: C.origin, badge: 'Origin', chips: [], text: b.origin ?? '', sub: b.goal ? `→ goal: ${b.goal}` : null }
+  }
   const lead = tree.leads[id]
   if (lead) {
     const chips = [pill(`p${lead.priority}`, C.text3, { key: 'p' })]
@@ -261,10 +311,10 @@ function Row({ tree, row, folded, selected, onSelect, onToggle }) {
     role: 'treeitem',
     'aria-selected': selected,
     'aria-expanded': kids.length ? open : undefined,
-    onClick: () => onSelect(row.id),
+    onClick: () => { if (!selectingText()) onSelect(row.id) },
     style: {
-      display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'default',
-      margin: '2px 8px', marginLeft: 8 + row.depth * 18, padding: '6px 8px 6px 6px', borderRadius: 8,
+      display: 'flex', alignItems: 'flex-start', gap: 6,
+      margin: '2px 8px', marginLeft: 8 + row.depth * 16, padding: '6px 8px 6px 6px', borderRadius: 8,
       borderLeft: `3px solid ${l.color}`,
       background: selected ? tint(C.accent, 14) : tint(l.color, 5),
       boxShadow: selected ? `inset 0 0 0 1px ${tint(C.accent, 45)}` : 'none',
@@ -292,7 +342,8 @@ function Row({ tree, row, folded, selected, onSelect, onToggle }) {
           jsx('div', {
             style: { color: C.text, lineHeight: 1.45, textDecoration: l.dim ? 'line-through' : 'none' },
             children: plainText(l.text) + (also ? ` (also from ${labels(also)})` : '')
-          })
+          }),
+          l.sub && jsx('div', { style: { color: C.text3, fontSize: 12, lineHeight: 1.4, marginTop: 2 }, children: plainText(l.sub) })
         ]
       })
     ]
@@ -317,8 +368,8 @@ function Detail({ ctx, snap, tree, id }) {
   const b = snap.board
   let title
   let lines // [field name or null, text, markdown?]
-  if (!id || id === 'board') {
-    title = 'The board'
+  if (!id || id === 'board' || id === 'origin') {
+    title = 'Origin'
     lines = [['origin', b.origin, true], ['goal', b.goal, true], [`test (${b.goal_test_kind})`, b.goal_test, false]]
     if (b.outcome) lines.push(['outcome', b.outcome, true])
   } else if (tree.leads[id]) {
@@ -345,7 +396,10 @@ function Detail({ ctx, snap, tree, id }) {
   return jsxs('div', {
     style: { ...S.card, maxHeight: '38%', overflow: 'auto', flexShrink: 0 },
     children: [
-      jsx('div', { style: { fontWeight: 600, marginBottom: 4 }, children: title }),
+      jsxs('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 4 }, children: [
+        jsx('div', { style: { fontWeight: 600, flex: 1, minWidth: 0 }, children: title }, 't'),
+        jsx(CopyBtn, { text: [title, ...lines.map(([field, value]) => (field ? `${field}: ${value}` : value))].join('\n'), what: 'entry' }, 'c')
+      ] }),
       ...lines.map(([field, value, md], i) => jsxs('div', {
         style: { color: C.text2, lineHeight: 1.5, marginTop: i ? 4 : 0 },
         children: md || field?.startsWith('test (')
@@ -358,7 +412,10 @@ function Detail({ ctx, snap, tree, id }) {
       ...evidence.map(ev => jsxs('div', {
         style: { marginTop: 8, borderTop: `1px solid ${C.line2}`, paddingTop: 6 },
         children: [
-          jsx('div', { style: { ...S.muted, fontSize: 11, marginBottom: 3 }, children: `e${ev.id} · ${ev.tool_name} · ${ev.chars} chars · ${ago(ev.created_at)}` }),
+          jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }, children: [
+            jsx('div', { style: { ...S.muted, fontSize: 11, flex: 1 }, children: `e${ev.id} · ${ev.tool_name} · ${ev.chars} chars · ${ago(ev.created_at)}` }, 't'),
+            jsx(CopyBtn, { text: ev.excerpt, what: `output of e${ev.id}` }, 'c')
+          ] }),
           jsx('pre', { style: S.pre, children: ev.excerpt.slice(0, 2000) })
         ]
       }, `e${ev.id}`))
@@ -463,11 +520,14 @@ function Files({ ctx, name, files }) {
           f.error && pill('not kept', C.rulesOut)
         ]
       }, f.path)),
-      open && MD_FILE.test(open) && jsx('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 }, children: jsx('button', {
-        type: 'button', onClick: () => setSource(!source),
-        style: { fontSize: 11, color: C.accent, background: 'none', border: 'none', padding: 0, cursor: 'pointer' },
-        children: source ? 'Show rendered' : 'Show source'
-      }) }),
+      open && jsxs('div', { style: { display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 6 }, children: [
+        MD_FILE.test(open) && jsx('button', {
+          type: 'button', onClick: () => setSource(!source),
+          style: { fontSize: 11, color: C.accent, background: 'none', border: 'none', padding: 0, cursor: 'pointer' },
+          children: source ? 'Show rendered' : 'Show source'
+        }, 's'),
+        jsx(CopyBtn, { text: content, what: 'file' }, 'c')
+      ] }),
       open && (MD_FILE.test(open) && !source
         ? jsx('div', { style: { maxHeight: 320, overflow: 'auto', marginTop: 4, padding: '6px 10px', borderRadius: 7, background: tint(C.text3, 6) }, children: jsx(Md, { text: content }) })
         : jsx('pre', { style: { ...S.pre, maxHeight: 260, overflow: 'auto', marginTop: 6, padding: 8, borderRadius: 7, background: tint(C.text3, 6) }, children: content }))
@@ -504,12 +564,13 @@ function Notes({ notes, canTakeBack, onTakeBack }) {
   })
 }
 
-function Card({ title, right, children, color }) {
+function Card({ title, right, children, color, copy, copyWhat }) {
   return jsxs('div', {
     style: { ...S.card, borderTop: color ? `3px solid ${color}` : S.card.border },
     children: [
       jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }, children: [
-        jsx('div', { style: { ...S.h, marginBottom: 0, flex: 1 }, children: title }), right
+        jsx('div', { style: { ...S.h, marginBottom: 0, flex: 1 }, children: title }, 't'), right,
+        copy ? jsx(CopyBtn, { text: copy, what: copyWhat ?? String(title).toLowerCase() }, 'c') : null
       ] }),
       children
     ]
@@ -553,7 +614,7 @@ function ReviewTab({ ctx, board, wf, onDone }) {
         children: [
           stage !== 'review' && jsx('div', { style: { ...S.pad, ...S.muted }, children: `Reviewed: the board is ${stage === 'working' ? `back with the agent (round ${wf.flow.round})` : stage === 'deliverable' ? 'complete' : stage === 'verification' ? 'in verification' : stage}.` }),
           jsx(Card, {
-            title: `Write-up · round ${latest.round}`, color: C.accent,
+            title: `Write-up · round ${latest.round}`, color: C.accent, copy: latest.text, copyWhat: 'write-up',
             right: jsx('span', { style: { ...S.muted, fontSize: 11 }, children: `${ago(latest.at)}${wf.reports.length > 1 ? ` · ${wf.reports.length - 1} earlier round(s)` : ''}` }),
             children: jsx(Md, { text: latest.text })
           }),
@@ -606,7 +667,7 @@ function VerificationTab({ ctx, board, wf, onDone }) {
         style: S.scroll,
         children: [
           jsx(Card, {
-            title: 'Independent verifier (subagent)', color: C.test,
+            title: 'Independent verifier (subagent)', color: C.test, copy: f.verifier_report, copyWhat: "verifier's report",
             right: jsxs('span', { style: S.row, children: [pill(verifierState, C.test), verdictPill(f.verifier_verdict, '—')] }),
             children: [
               f.verifier_note && jsx('div', { style: { ...S.muted, marginBottom: f.verifier_report ? 6 : 0 }, children: f.verifier_note }, 'n'),
@@ -614,12 +675,12 @@ function VerificationTab({ ctx, board, wf, onDone }) {
             ]
           }),
           jsx(Card, {
-            title: "The agent's own check", color: C.intent,
+            title: "The agent's own check", color: C.intent, copy: f.own_report, copyWhat: "agent's check",
             right: verdictPill(f.own_verdict, 'not filed yet'),
             children: f.own_report ? jsx(Md, { text: f.own_report }) : jsx('div', { style: S.muted, children: '—' })
           }),
           jsx(Card, {
-            title: 'Reconciled', color: C.accent,
+            title: 'Reconciled', color: C.accent, copy: f.verification, copyWhat: 'reconciled report',
             right: verdictPill(f.verdict, 'not yet'),
             children: f.verification ? jsx(Md, { text: f.verification }) : jsx('div', { style: S.muted, children: 'The agent reconciles the two checks once both are in.' })
           })
@@ -663,8 +724,8 @@ function CompleteTab({ ctx, board, wf, onDone }) {
               jsx('div', { style: { ...S.muted, marginTop: 2 }, children: `${f.verdict ? `verified (${f.verdict}) · ` : ''}accepted ${ago(f.accepted_at)}` })
             ]
           }),
-          latest && jsx(Card, { title: `Final write-up · round ${latest.round}`, color: C.accent, children: jsx(Md, { text: latest.text }) }),
-          f.verification && jsx(Card, { title: 'Verification', color: C.test, right: verdictPill(f.verdict), children: jsx(Md, { text: f.verification }) }),
+          latest && jsx(Card, { title: `Final write-up · round ${latest.round}`, color: C.accent, copy: latest.text, copyWhat: 'write-up', children: jsx(Md, { text: latest.text }) }),
+          f.verification && jsx(Card, { title: 'Verification', color: C.test, right: verdictPill(f.verdict), copy: f.verification, copyWhat: 'verification', children: jsx(Md, { text: f.verification }) }),
           jsx(Card, { title: 'Files as delivered', children: jsx(Files, { ctx, name: board.name, files: wf.files }) }),
           wf.notes.length > 0 && jsx(Card, { title: 'Review', color: C.review, children: jsx(Notes, { notes: wf.notes, canTakeBack: false }) })
         ]
@@ -699,7 +760,7 @@ function Stepper({ board, wf }) {
   const current = stepOf(board, wf)
   const at = STEPS.findIndex(([key]) => key === current)
   return jsx('div', {
-    style: { display: 'flex', alignItems: 'center', gap: 4, margin: '8px 0 2px' },
+    style: { display: 'flex', alignItems: 'center', gap: 4, margin: '8px 0 2px', userSelect: 'none' },
     children: STEPS.map(([key, text], i) => {
       const done = i < at
       const now = i === at
@@ -780,17 +841,66 @@ function Tabs({ shown, onPick, wf }) {
 
 // ------------------------------------------------------------------ the pane
 
+// ------------------------------------------------------------------ stale builds
+
+function newer(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0)
+  const pb = String(b).split('.').map(n => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
+  }
+  return false
+}
+
+/** What to tell the operator when Hermes has a different build loaded than this pane, or null.
+ *  `info` is /build's answer, or { api: null } when this backend has no /build (older than 0.2.0). */
+export function staleBuild(info) {
+  if (!info) return null
+  const restart = 'Run `hermes gateway restart` (or quit and reopen Hermes)'
+  if (!info.api || newer(BUILD, info.api)) {
+    return `Hermes is still running an older search-board backend (${info.api || 'before 0.2.0'}; this pane is ${BUILD}). ${restart}, then reopen this pane.`
+  }
+  if (newer(info.api, BUILD)) {
+    return `This pane is an older search-board build (${BUILD}; installed: ${info.api}). In Capabilities → Plugins, switch search-board's desktop half off and on.`
+  }
+  if (info.agent && info.agent !== BUILD) {
+    return `The agent side is still running search-board ${info.agent} (this pane is ${BUILD}), so tools, hooks and the verifier are the old ones. ${restart}.`
+  }
+  return null
+}
+
+function StaleBanner({ text }) {
+  return jsxs('div', {
+    role: 'alert',
+    style: { margin: '8px 10px 0', padding: '8px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.45,
+      color: C.text, background: tint(C.review, 12), border: `1px solid ${tint(C.review, 40)}` },
+    children: [jsx('span', { style: { fontWeight: 700, color: C.review }, children: 'Restart needed. ' }, 'h'), text]
+  })
+}
+
 function BoardPane({ ctx }) {
   const [boards, setBoards] = useState([])
   const [name, setName] = useState(() => ctx.storage.get('board', ''))
   const [snap, setSnap] = useState(null)
   const [wf, setWf] = useState(null)
   const [tab, setTab] = useState('board')
-  const [selected, setSelected] = useState('board')
+  const [selected, setSelected] = useState('origin')
   const [folded, setFolded] = useState({})
   const [tick, setTick] = useState(0)
   const [failure, setFailure] = useState('')
+  const [buildInfo, setBuildInfo] = useState(null)
   const refresh = useCallback(() => setTick(t => t + 1), [])
+
+  useEffect(() => {
+    let live = true
+    ctx.rest('/build')
+      .then(body => live && setBuildInfo({ api: body?.api ?? null, agent: body?.agent ?? null }))
+      .catch(e => {
+        // A backend from before 0.2.0 has no /build; anything else (offline, ...) says nothing about builds.
+        if (live && (e?.statusCode === 404 || /^404\b|not found/i.test(String(e?.message ?? e)))) setBuildInfo({ api: null, agent: null })
+      })
+    return () => { live = false }
+  }, [ctx, tick])
 
   useEffect(() => {
     const stopEvent = ctx.onEvent(EVENT, refresh)
@@ -839,23 +949,29 @@ function BoardPane({ ctx }) {
     })
   }
   const b = snap?.board
-  const pick = value => { setName(value); setSelected('board'); setFolded({}); setTab('board') }
+  const pick = value => { setName(value); setSelected('origin'); setFolded({}); setTab('board') }
 
   return jsxs('div', {
+    // The app makes its chrome unselectable; the pane's text is content, so it opts back in.
+    'data-selectable-text': 'true',
     style: S.pane,
     children: [
+      staleBuild(buildInfo) && jsx(StaleBanner, { text: staleBuild(buildInfo) }),
       b && jsx(Head, { board: b, wf, boards, name, onPick: pick }),
       jsx(Tabs, { shown: tab, onPick: setTab, wf }),
       tab === 'board' && jsx('div', {
         role: 'tree',
         style: { ...S.scroll, padding: '6px 0' },
-        children: tree && rows.length
-          ? rows.map(row => jsx(Row, {
-            tree, row, folded,
-            selected: selected === row.id,
-            onSelect: setSelected,
-            onToggle: (id, fold) => setFolded(f => ({ ...f, [id]: fold }))
-          }, row.id))
+        children: tree
+          ? [
+              ...rows.map(row => jsx(Row, {
+                tree, row, folded,
+                selected: selected === row.id,
+                onSelect: setSelected,
+                onToggle: (id, fold) => setFolded(f => ({ ...f, [id]: fold }))
+              }, row.id)),
+              !tree.children.origin.length && jsx('div', { style: { ...S.muted, margin: '4px 8px 0 32px', fontSize: 12 }, children: 'No intents declared yet, nothing found.' }, 'empty')
+            ]
           : jsx(Empty, { title: 'Nothing yet', children: 'No intents declared, nothing found.' })
       }),
       tab === 'board' && snap && jsx(Detail, { ctx, snap, tree, id: selected }),

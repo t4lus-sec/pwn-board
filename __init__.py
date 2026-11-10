@@ -18,6 +18,18 @@ log = logging.getLogger(__name__)
 PLUGIN = "search-board"
 DB_FILE = "boards.db"
 
+
+def build_version() -> str:
+    """This build's version, from plugin.yaml (the one source of it)."""
+    import re
+
+    try:
+        text = (Path(__file__).resolve().parent / "plugin.yaml").read_text(encoding="utf-8")
+        found = re.search(r"^version:\s*['\"]?([^'\"\s]+)", text, re.M)
+        return found.group(1) if found else "unknown"
+    except OSError:
+        return "unknown"
+
 _store = None
 _store_lock = threading.Lock()
 _db_path = None  # fixed at register(), in this plugin's own profile
@@ -62,10 +74,20 @@ def session_key_of(kwargs: dict) -> str:
     return str(key or kwargs.get("session_key") or kwargs.get("session_id") or "")
 
 
+_build_recorded = False
+
+
 def ensure_poller() -> None:
     """Start the workflow's thread on first use (not at load, so validate/doctor start nothing)."""
+    global _build_recorded
     if _poller is not None:
         _poller.start()
+    if not _build_recorded:
+        try:
+            store().record_build("agent", build_version())
+            _build_recorded = True
+        except Exception as error:
+            log.debug("search-board: build not recorded: %s", error)
 
 
 def register(ctx) -> None:
@@ -73,7 +95,8 @@ def register(ctx) -> None:
     from . import board_commands, board_flow, board_hooks
     from .board_tools import SCHEMAS, TOOLSET, Tools, is_subagent, terminal_runner
 
-    global _db_path, _poller, _store, _verifiers
+    global _db_path, _poller, _store, _verifiers, _build_recorded
+    _build_recorded = False
     try:
         from plugins.plugin_storage import plugin_data_dir
 
@@ -81,6 +104,13 @@ def register(ctx) -> None:
         _store = None
     except Exception as error:
         log.debug("search-board: data dir not resolved at load: %s", error)
+    # Say which build the agent side runs, so the pane can tell when Hermes still has an older one
+    # loaded. Only into a database that already exists: loading the plugin creates no files.
+    try:
+        if _db_path is not None and Path(_db_path).exists():
+            store().record_build("agent", build_version())
+    except Exception as error:
+        log.debug("search-board: build not recorded: %s", error)
 
     proc = secrets.token_hex(8)  # this process: a verifier launched by another one is gone
     _poller = board_flow.Poller(store, board_flow.injector(ctx), proc)

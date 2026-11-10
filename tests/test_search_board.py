@@ -431,6 +431,21 @@ def test_the_tree_reads_as_leads_and_what_they_found(t, store):
         assert detail.startswith("[+] Finding 1") and "explored: Intent 1" in detail and "--- e1: terminal" in detail
 
 
+def test_the_origin_is_the_root_of_the_board(t, store):
+    """The origin is an entry of its own: the tree's root, which the seed intents grow from."""
+    open_board(t)
+    call(t, "search_board_leads", {"name": "flaky-flush", "leads": [
+        {"direction": "Reproduce with fifty runs", "rationale": "Need a repro first"}]})
+    lines = operator.run(store, "show flaky-flush").splitlines()
+    origin = next(i for i, line in enumerate(lines) if "[o] Origin — test_flush fails intermittently on CI" in line)
+    l1 = next(i for i, line in enumerate(lines) if "Intent 1" in line)
+    assert origin < l1
+    assert lines[l1].index("Intent 1") > lines[origin].index("Origin"), "seed intents sit under the origin"
+    for ref in ("origin", "Origin"):
+        assert "origin: test_flush fails intermittently on CI" in operator.run(store, f"detail flaky-flush {ref}")
+    assert call(t, "search_board_read", {"name": "flaky-flush"})["board"]["origin"] == "test_flush fails intermittently on CI"
+
+
 def test_messaging_platforms_get_a_code_block():
     assert operator.format_for("telegram", "x") == "```\nx\n```"
     assert operator.format_for("cli", "x") == "x"
@@ -478,3 +493,25 @@ def test_register_matches_the_manifest(monkeypatch, store):
     assert sorted(ctx.hooks) == sorted(manifest["provides_hooks"])
     assert list(ctx.commands) == ["sboard"] and list(ctx.skills) == ["search-board"]
     assert "No boards" in ctx.commands["sboard"]("")
+    assert store.build("agent") == str(manifest["version"]), "first use says which build the agent side runs"
+
+
+def test_loading_creates_no_files_but_stamps_an_existing_database(monkeypatch, tmp_path):
+    import types
+
+    import yaml
+
+    storage = types.ModuleType("plugins.plugin_storage")
+    storage.plugin_data_dir = lambda plugin: tmp_path / plugin
+    monkeypatch.setitem(sys.modules, "plugins", types.ModuleType("plugins"))
+    monkeypatch.setitem(sys.modules, "plugins.plugin_storage", storage)
+    monkeypatch.setattr(sb, "_store", None)
+    sb.register(FakeCtx())
+    assert not (tmp_path / "search-board").exists(), "validate/doctor load the plugin: no database for that"
+
+    (tmp_path / "search-board").mkdir()
+    Store.at(tmp_path / "search-board" / "boards.db").record_build("agent", "0.1.0")
+    monkeypatch.setattr(sb, "_store", None)
+    sb.register(FakeCtx())
+    version = str(yaml.safe_load((ROOT / "plugin.yaml").read_text())["version"])
+    assert Store.at(tmp_path / "search-board" / "boards.db").build("agent") == version

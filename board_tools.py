@@ -69,7 +69,7 @@ def _no(error: str, **fields) -> str:
 def _board_view(board, counts: Optional[dict] = None) -> dict:
     view = {
         "name": board.name, "title": board.title, "status": board.status,
-        "goal": board.goal, "goal_test": board.goal_test, "goal_test_kind": board.goal_test_kind,
+        "origin": board.origin, "goal": board.goal, "goal_test": board.goal_test, "goal_test_kind": board.goal_test_kind,
         "steps": f"{board.steps_used}/{board.step_budget}",
     }
     if board.outcome:

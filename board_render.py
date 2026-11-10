@@ -68,6 +68,9 @@ def holder(worker: Optional[str]) -> str:
     return "the main agent"
 
 
+ORIGIN_MARK = "[o]"
+
+
 class _Tree:
     """Nodes keyed 'board', 'L3', 'F2', 'N1', with children in display order."""
 
@@ -149,6 +152,8 @@ def tree(snap: Snapshot, *, width: int = 110, fold_ruled_out: bool = True,
     ]
     if b.outcome:
         lines.append("│  " + _clip(f"outcome: {b.outcome}", width - 3))
+    # The origin is the tree's root: where the search started, and what every seed intent grew from.
+    lines.append("└─ " + _clip(f"{ORIGIN_MARK} Origin — {b.origin}", width - 3))
 
     def walk(key: str, prefix: str) -> None:
         kids = list(t.children.get(key, []))
@@ -168,9 +173,9 @@ def tree(snap: Snapshot, *, width: int = 110, fold_ruled_out: bool = True,
             if child:
                 walk(child, prefix + ("   " if last else "│  "))
 
-    walk("board", "")
-    if not snap.leads and not snap.findings:
-        lines.append("└─ (nothing yet: no intents declared, nothing found)")
+    walk("board", "   ")
+    if not snap.leads and not snap.findings and not snap.notes:
+        lines.append("   └─ (nothing yet: no intents declared, nothing found)")
     return "\n".join(lines)
 
 
@@ -180,9 +185,9 @@ def detail(snap: Snapshot, key: str, evidence: Optional[list] = None,
     at = at or now_utc()
     key = parse_ref(key)
     b = snap.board
-    if key in ("", "BOARD", b.name.upper()):
+    if key in ("", "BOARD", "ORIGIN", b.name.upper()):
         return "\n".join([
-            f"{b.name} — {b.title}", f"status: {b.status} · steps {b.steps_used}/{b.step_budget}",
+            f"{ORIGIN_MARK} Origin of {b.name} — {b.title}", f"status: {b.status} · steps {b.steps_used}/{b.step_budget}",
             f"origin: {b.origin}", f"goal: {b.goal}", f"test ({b.goal_test_kind}): {b.goal_test}",
         ] + ([f"outcome: {b.outcome}"] if b.outcome else []))
     for lead in snap.leads:
