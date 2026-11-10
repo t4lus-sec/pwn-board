@@ -221,7 +221,7 @@ The agent hears about your decisions with its next turn.
 
 ```bash
 hermes plugins install pwn-board --enable              # once listed in the catalog
-hermes plugins install t4lus/pwn-board --enable        # straight from GitHub
+hermes plugins install t4lus-sec/pwn-board --enable        # straight from GitHub
 ```
 
 Then, in Desktop: **Capabilities → Plugins → pwn-board**, and enable the desktop half to get the
